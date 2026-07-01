@@ -48,10 +48,12 @@ export async function POST(request: NextRequest) {
     const format = formData.get("format");
     const quality = formData.get("quality");
     const bgColor = formData.get("bg_color");
+    const edges = formData.get("edges");
 
     if (typeof format === "string") upstream.append("format", format);
     if (typeof quality === "string") upstream.append("quality", quality);
     if (typeof bgColor === "string") upstream.append("bg_color", bgColor);
+    if (typeof edges === "string") upstream.append("edges", edges);
 
     const headers: HeadersInit = {};
     if (apiKey) {
