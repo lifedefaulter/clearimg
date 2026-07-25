@@ -7,7 +7,7 @@ export const size = {
 
 export const contentType = "image/png";
 export const alt =
-  "ClearImg — free AI background remover with HD cutouts, backdrops, and multi-size downloads";
+  "ClearImg: free AI background remover with HD cutouts, backdrops, and multi-size downloads";
 
 export default function Image() {
   return new ImageResponse(

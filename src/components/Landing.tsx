@@ -1,7 +1,7 @@
 import { FAQ_ITEMS } from "@/lib/constants";
 
 /**
- * Server-rendered landing content below the hero. Pure static markup —
+ * Server-rendered landing content below the hero. Pure static markup,
  * ships zero JS and keeps the SEO copy in the initial HTML.
  */
 export function Landing() {
@@ -39,7 +39,7 @@ export function Landing() {
                 step: "1",
                 title: "Upload",
                 color: "var(--coral)",
-                copy: "Drop in a PNG, JPG, or WebP — product shots, portraits, pets, signatures, all welcome.",
+                copy: "Drop in a PNG, JPG, or WebP: product shots, portraits, pets, signatures, all welcome.",
               },
               {
                 step: "2",
@@ -114,7 +114,7 @@ export function Landing() {
             }}
           >
             Remove the background from product photos, portraits, e-commerce
-            listings, social posts, logos, and document signatures — then finish
+            listings, social posts, logos, and document signatures, then finish
             the image without leaving the page.
           </p>
           <div
@@ -128,7 +128,7 @@ export function Landing() {
             {[
               {
                 title: "HD edge quality",
-                copy: "Full-resolution edge refinement keeps hair, fur, and fine outlines crisp — no blocky halos.",
+                copy: "Full-resolution edge refinement keeps hair, fur, and fine outlines crisp. No blocky halos.",
               },
               {
                 title: "Backdrops & shadows",
@@ -144,7 +144,7 @@ export function Landing() {
               },
               {
                 title: "Touch-up brushes",
-                copy: "Erase leftovers or restore parts the AI trimmed, with undo — right on the preview.",
+                copy: "Erase leftovers or restore parts the AI trimmed, with undo, right on the preview.",
               },
               {
                 title: "Private by design",
@@ -193,7 +193,7 @@ export function Landing() {
 
       <footer style={{ padding: "26px 20px", textAlign: "center" }}>
         <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>
-          © {new Date().getFullYear()} ClearImg — free AI background remover.
+          © {new Date().getFullYear()} ClearImg · free AI background remover.
           Made for clean cutouts.
         </p>
       </footer>

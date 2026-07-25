@@ -277,7 +277,7 @@ export function Editor({
       }
     };
     xhr.onerror = () => {
-      setError("Network error — check your connection and try again.");
+      setError("Network error. Check your connection and try again.");
       setStatus("error");
     };
     xhr.send(fd);
@@ -473,7 +473,7 @@ export function Editor({
         }
       }
     } catch {
-      setError("Export failed — please try again.");
+      setError("Export failed. Please try again.");
       setStatus("error");
     } finally {
       setDownloading(false);
@@ -794,7 +794,7 @@ export function Editor({
             </div>
             {format !== "png" && effectiveBackdrop === "transparent" && format === "jpg" && (
               <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>
-                JPG has no transparency — a white backdrop will be used.
+                JPG has no transparency, so a white backdrop will be used.
               </p>
             )}
             <p className="ci-label">Sizes</p>
@@ -1161,7 +1161,7 @@ export function Editor({
                 </div>
               )}
               <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>
-                {elapsed >= 4 ? `${elapsed}s — HD usually takes under 10s` : " "}
+                {elapsed >= 4 ? `${elapsed}s · HD usually takes under 10s` : " "}
               </p>
             </div>
           )}

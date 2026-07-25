@@ -26,7 +26,7 @@ export type SizePresetId = (typeof SIZE_PRESETS)[number]["id"];
 export const FAQ_ITEMS: { q: string; a: string }[] = [
   {
     q: "Is ClearImg really free?",
-    a: "Yes. Upload a photo, remove the background in HD, fine-tune it, and download every size you need — no signup, no watermark, no credit card.",
+    a: "Yes. Upload a photo, remove the background in HD, fine-tune it, and download every size you need. No signup, no watermark, no credit card.",
   },
   {
     q: "How does the background remover work?",
@@ -34,7 +34,7 @@ export const FAQ_ITEMS: { q: string; a: string }[] = [
   },
   {
     q: "Which files and sizes are supported?",
-    a: "PNG, JPG, and WebP images up to 20MB. The transparent result keeps the original resolution, and you can export extra sizes — large, social, and thumbnail — in one click.",
+    a: "PNG, JPG, and WebP images up to 20MB. The transparent result keeps the original resolution, and you can export extra sizes (large, social, and thumbnail) in one click.",
   },
   {
     q: "What happens to my photos?",
@@ -42,7 +42,7 @@ export const FAQ_ITEMS: { q: string; a: string }[] = [
   },
   {
     q: "How do I get the cleanest cutout?",
-    a: "Use HD quality (the default). For portraits, pets, or anything with fine hair, switch Edges to “Soft” — it runs a slower matting pass that keeps wispy details. You can also touch up any spot with the Erase and Restore brushes.",
+    a: "Use HD quality (the default). For portraits, pets, or anything with fine hair, switch Edges to “Soft”, which runs a slower matting pass that keeps wispy details. You can also touch up any spot with the Erase and Restore brushes.",
   },
   {
     q: "Can I change the background or fix the colors?",

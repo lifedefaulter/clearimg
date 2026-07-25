@@ -1,5 +1,5 @@
 // Client-side export pipeline: corrections + backdrop + shadow + resize + encode.
-// Pixel math instead of ctx.filter — Safari has no CanvasRenderingContext2D.filter.
+// Pixel math instead of ctx.filter: Safari has no CanvasRenderingContext2D.filter.
 
 export type OutputFormat = "png" | "jpg" | "webp";
 
@@ -19,7 +19,7 @@ export function isNeutral(a: Adjustments): boolean {
   return a.brightness === 0 && a.contrast === 0 && a.saturation === 0;
 }
 
-/** CSS filter string for live preview — mirrors applyAdjustments visually. */
+/** CSS filter string for live preview; mirrors applyAdjustments visually. */
 export function adjustmentsToCss(a: Adjustments): string {
   if (isNeutral(a)) return "none";
   const b = 1 + a.brightness / 100;

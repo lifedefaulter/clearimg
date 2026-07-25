@@ -41,12 +41,12 @@ export function StudioShell({ landing }: { landing: React.ReactNode }) {
 
   const selectFile = useCallback((f: File) => {
     if (!ACCEPTED_TYPES.includes(f.type as (typeof ACCEPTED_TYPES)[number])) {
-      setPickError("That file type isn't supported — try PNG, JPG, or WebP.");
+      setPickError("That file type isn't supported. Try PNG, JPG, or WebP.");
       setDragOver(false);
       return;
     }
     if (f.size > MAX_FILE_SIZE) {
-      setPickError("That image is over 20MB — try a smaller one.");
+      setPickError("That image is over 20MB. Try a smaller one.");
       setDragOver(false);
       return;
     }
@@ -240,7 +240,7 @@ export function StudioShell({ landing }: { landing: React.ReactNode }) {
                 free, in HD, in seconds
               </h1>
               <p style={{ fontSize: 18, color: "var(--muted)", margin: "18px auto 0", maxWidth: 560, lineHeight: 1.6 }}>
-                Upload a photo and get a crisp transparent cutout — then fix the
+                Upload a photo and get a crisp transparent cutout, then fix the
                 lighting, pick a backdrop, and download every size you need.
                 No signup, no watermark.
               </p>

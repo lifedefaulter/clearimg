@@ -18,11 +18,11 @@ const outfit = Outfit({
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "ClearImg — Free AI Background Remover (HD, No Signup)",
+    default: "ClearImg: Free AI Background Remover (HD, No Signup)",
     template: `%s · ${SITE_NAME}`,
   },
   description:
-    "Remove the background from any photo in seconds, free and in HD. Fix brightness and color, add backdrops or studio shadows, and download every size — no signup, no watermark.",
+    "Remove the background from any photo in seconds, free and in HD. Fix brightness and color, add backdrops or studio shadows, and download every size. No signup, no watermark.",
   keywords: [
     "background remover",
     "remove background from image",
@@ -40,15 +40,15 @@ export const metadata: Metadata = {
     type: "website",
     url: SITE_URL,
     siteName: SITE_NAME,
-    title: "ClearImg — Free AI Background Remover",
+    title: "ClearImg: Free AI Background Remover",
     description:
-      "Crisp HD cutouts in seconds. Fix lighting, pick a backdrop, and download every size you need — free, no signup.",
+      "Crisp HD cutouts in seconds. Fix lighting, pick a backdrop, and download every size you need. Free, no signup.",
   },
   twitter: {
     card: "summary_large_image",
-    title: "ClearImg — Free AI Background Remover",
+    title: "ClearImg: Free AI Background Remover",
     description:
-      "Crisp HD cutouts in seconds. Fix lighting, pick a backdrop, and download every size you need — free, no signup.",
+      "Crisp HD cutouts in seconds. Fix lighting, pick a backdrop, and download every size you need. Free, no signup.",
   },
   robots: {
     index: true,
