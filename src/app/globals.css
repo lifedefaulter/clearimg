@@ -202,6 +202,86 @@ body {
   box-shadow: var(--shadow-soft);
 }
 
+/* Compact segmented control (rail rows, touch-up toolbar) */
+.ci-seg-sm {
+  padding: 3px;
+  gap: 3px;
+}
+
+.ci-seg-sm button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+/* Left rail: fits the viewport, scrolls internally only when it must */
+.ci-rail {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-soft) transparent;
+}
+
+.ci-rail::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ci-rail::-webkit-scrollbar-thumb {
+  background: var(--line-soft);
+  border-radius: 999px;
+}
+
+/* Size-true touch-up brush cursor */
+.ci-brush-ring {
+  position: absolute;
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--coral);
+  background: color-mix(in srgb, var(--coral) 14%, transparent);
+  color: var(--coral);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.8),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+  transition:
+    width 0.08s linear,
+    height 0.08s linear,
+    opacity 0.12s var(--ease);
+}
+
+.ci-brush-ring::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translate(-50%, -50%);
+}
+
+.ci-brush-ring[data-mode="restore"] {
+  border-color: var(--mint);
+  background: color-mix(in srgb, var(--mint) 14%, transparent);
+  color: var(--mint);
+}
+
+/* Keyboard hint chips */
+.ci-kbd {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border: 1px solid var(--line-soft);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--card);
+  color: var(--muted);
+}
+
 /* Option tiles (quality / edge mode) */
 .ci-tile {
   padding: 10px 8px;

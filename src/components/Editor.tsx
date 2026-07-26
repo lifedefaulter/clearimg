@@ -28,6 +28,8 @@ const BUSY_MSGS = [
   "Almost there…",
 ];
 
+const HISTORY_LIMIT = 12;
+
 function fmtSize(bytes: number): string {
   return bytes >= 1024 * 1024
     ? (bytes / 1024 / 1024).toFixed(1) + " MB"
@@ -85,6 +87,7 @@ export function Editor({
   const [brushMode, setBrushMode] = useState<"erase" | "restore">("erase");
   const [brushSize, setBrushSize] = useState(36);
   const [undoCount, setUndoCount] = useState(0);
+  const [redoCount, setRedoCount] = useState(0);
 
   // export
   const [format, setFormat] = useState<OutputFormat>("png");
@@ -119,8 +122,13 @@ export function Editor({
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const origImgRef = useRef<HTMLImageElement | null>(null);
   const undoStackRef = useRef<ImageData[]>([]);
+  const redoStackRef = useRef<ImageData[]>([]);
   const drawingRef = useRef(false);
   const lastPtRef = useRef<{ x: number; y: number } | null>(null);
+  const brushRingRef = useRef<HTMLDivElement>(null);
+  const ringPreviewTimer = useRef(0);
+  const ringPosRef = useRef<{ x: number; y: number } | null>(null);
+  const overCanvasRef = useRef(false);
 
   const isBusy = status === "uploading" || status === "processing";
   const isDone = status === "done";
@@ -227,7 +235,9 @@ export function Editor({
     setError(null);
     setSettingsDirty(false);
     setUndoCount(0);
+    setRedoCount(0);
     undoStackRef.current = [];
+    redoStackRef.current = [];
 
     const fd = new FormData();
     fd.append("file", file);
@@ -292,10 +302,11 @@ export function Editor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // revoke result URL on unmount
+  // revoke result URL + pending timers on unmount
   useEffect(
     () => () => {
       if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
+      window.clearTimeout(ringPreviewTimer.current);
     },
     []
   );
@@ -314,6 +325,14 @@ export function Editor({
     if (view !== "touchup" || !resultUrl) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // Invalidate the previous visit's context and history synchronously:
+    // until the image decodes, a stroke or undo would hit a detached canvas
+    // and commit a blank result.
+    ctxRef.current = null;
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    setUndoCount(0);
+    setRedoCount(0);
     const img = new Image();
     img.onload = () => {
       canvas.width = img.naturalWidth;
@@ -323,8 +342,6 @@ export function Editor({
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
       ctxRef.current = ctx;
-      undoStackRef.current = [];
-      setUndoCount(0);
     };
     img.src = resultUrl;
     // reload only when entering the view
@@ -363,14 +380,62 @@ export function Editor({
     }
   };
 
-  const commitCanvas = () => {
+  const commitCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     canvas.toBlob((blob) => {
       if (!blob) return;
       setResultUrl(URL.createObjectURL(blob));
     }, "image/png");
+  }, [setResultUrl]);
+
+  // The ring lives in the stage (outside the zoomed layer), so its on-screen
+  // size always equals brushSize, which is also the stroke's on-screen size.
+  const moveRing = (e: React.PointerEvent) => {
+    const ring = brushRingRef.current;
+    const stage = stageRef.current;
+    if (!ring || !stage) return;
+    window.clearTimeout(ringPreviewTimer.current);
+    // clientLeft/Top: absolute children position from the padding box, while
+    // getBoundingClientRect() is the border box (the stage has a 1.5px border)
+    const rect = stage.getBoundingClientRect();
+    const x = e.clientX - rect.left - stage.clientLeft;
+    const y = e.clientY - rect.top - stage.clientTop;
+    overCanvasRef.current = true;
+    ringPosRef.current = { x, y };
+    ring.style.left = `${x}px`;
+    ring.style.top = `${y}px`;
+    ring.style.opacity = "1";
   };
+
+  const hideRing = () => {
+    overCanvasRef.current = false;
+    const ring = brushRingRef.current;
+    if (ring) ring.style.opacity = "0";
+  };
+
+  // show slider / keyboard resizes: in place when the pointer is on the
+  // canvas (cursor:none there, so the ring must stay), else a centered flash
+  const previewBrush = useCallback(() => {
+    const ring = brushRingRef.current;
+    const stage = stageRef.current;
+    if (!ring || !stage) return;
+    window.clearTimeout(ringPreviewTimer.current);
+    if (overCanvasRef.current && ringPosRef.current) {
+      ring.style.left = `${ringPosRef.current.x}px`;
+      ring.style.top = `${ringPosRef.current.y}px`;
+      ring.style.opacity = "1";
+      return;
+    }
+    ring.style.left = `${stage.clientWidth / 2}px`;
+    ring.style.top = `${stage.clientHeight / 2}px`;
+    ring.style.opacity = "1";
+    ringPreviewTimer.current = window.setTimeout(() => {
+      if (!overCanvasRef.current && brushRingRef.current) {
+        brushRingRef.current.style.opacity = "0";
+      }
+    }, 700);
+  }, []);
 
   const onBrushDown = (e: React.PointerEvent) => {
     const canvas = canvasRef.current;
@@ -380,9 +445,11 @@ export function Editor({
     canvas.setPointerCapture(e.pointerId);
     try {
       undoStackRef.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
-      if (undoStackRef.current.length > 12) undoStackRef.current.shift();
+      if (undoStackRef.current.length > HISTORY_LIMIT) undoStackRef.current.shift();
       setUndoCount(undoStackRef.current.length);
     } catch {}
+    redoStackRef.current = [];
+    setRedoCount(0);
     drawingRef.current = true;
     const p = canvasPoint(e);
     lastPtRef.current = p;
@@ -390,6 +457,7 @@ export function Editor({
   };
 
   const onBrushMove = (e: React.PointerEvent) => {
+    moveRing(e);
     if (!drawingRef.current) return;
     const p = canvasPoint(e);
     const r = (brushSize / 2) * p.scale;
@@ -406,20 +474,77 @@ export function Editor({
     lastPtRef.current = p;
   };
 
-  const onBrushUp = () => {
+  const onBrushUp = (e: React.PointerEvent) => {
+    if (e.pointerType !== "mouse") hideRing();
     if (!drawingRef.current) return;
     drawingRef.current = false;
     commitCanvas();
   };
 
-  const undo = () => {
+  const undo = useCallback(() => {
     const ctx = ctxRef.current;
+    const canvas = canvasRef.current;
     const stack = undoStackRef.current;
-    if (!ctx || !stack.length) return;
+    if (!ctx || !canvas || ctx.canvas !== canvas || !stack.length) return;
+    if (drawingRef.current) return; // mid-stroke history jumps corrupt the canvas
+    try {
+      redoStackRef.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      if (redoStackRef.current.length > HISTORY_LIMIT) redoStackRef.current.shift();
+      setRedoCount(redoStackRef.current.length);
+    } catch {}
     ctx.putImageData(stack.pop()!, 0, 0);
     setUndoCount(stack.length);
     commitCanvas();
-  };
+  }, [commitCanvas]);
+
+  const redo = useCallback(() => {
+    const ctx = ctxRef.current;
+    const canvas = canvasRef.current;
+    const stack = redoStackRef.current;
+    if (!ctx || !canvas || ctx.canvas !== canvas || !stack.length) return;
+    if (drawingRef.current) return; // mid-stroke history jumps corrupt the canvas
+    try {
+      undoStackRef.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      if (undoStackRef.current.length > HISTORY_LIMIT) undoStackRef.current.shift();
+      setUndoCount(undoStackRef.current.length);
+    } catch {}
+    ctx.putImageData(stack.pop()!, 0, 0);
+    setRedoCount(stack.length);
+    commitCanvas();
+  }, [commitCanvas]);
+
+  // touch-up keyboard shortcuts: Ctrl+Z / Ctrl+Y history, [ ] brush size
+  useEffect(() => {
+    if (!isDone || view !== "touchup") return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "TEXTAREA" ||
+          t.isContentEditable ||
+          (t instanceof HTMLInputElement && t.type === "text"))
+      ) {
+        return;
+      }
+      // e.code: physical key, so shortcuts work on non-Latin keyboard layouts
+      if ((e.ctrlKey || e.metaKey) && (e.code === "KeyZ" || e.key.toLowerCase() === "z")) {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if ((e.ctrlKey || e.metaKey) && (e.code === "KeyY" || e.key.toLowerCase() === "y")) {
+        e.preventDefault();
+        redo();
+      } else if (e.key === "[" || e.code === "BracketLeft") {
+        setBrushSize((s) => Math.max(8, s - 4));
+        previewBrush();
+      } else if (e.key === "]" || e.code === "BracketRight") {
+        setBrushSize((s) => Math.min(120, s + 4));
+        previewBrush();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isDone, view, undo, redo, previewBrush]);
 
   // ---------- export ----------
   const effectiveBackdrop = backdrop === "custom" ? customBg : backdrop;
@@ -510,41 +635,67 @@ export function Editor({
     display: "block",
   };
 
+  const railRow: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  };
+
+  const vDivider: React.CSSProperties = {
+    width: 1.5,
+    height: 22,
+    background: "var(--line-soft)",
+    flexShrink: 0,
+  };
+
   // ================= RENDER =================
   return (
     <main
       style={{
         flex: 1,
         width: "100%",
-        maxWidth: 1380,
+        maxWidth: 1500,
         margin: "0 auto",
-        padding: 18,
+        padding: 14,
         display: "grid",
-        gridTemplateColumns: narrow ? "1fr" : "296px minmax(0, 1fr)",
-        gap: 18,
-        alignItems: "start",
+        gridTemplateColumns: narrow ? "1fr" : "292px minmax(0, 1fr)",
+        // minmax(0, 1fr) keeps the single row inside the cap so the rail
+        // scrolls instead of clipping
+        gridTemplateRows: narrow ? undefined : "minmax(0, 1fr)",
+        gap: 12,
+        minHeight: narrow ? undefined : 0,
+        // cap at the viewport: the shell's min-height 100vh is indefinite, so
+        // without this the grid content-sizes past the fold on short windows
+        // (66px = 64px header + its 1.5px bottom border)
+        maxHeight: narrow ? undefined : "calc(100vh - 66px)",
+        overflow: narrow ? undefined : "hidden",
       }}
     >
-      {/* ============ Left rail ============ */}
+      {/* ============ Left rail: every control on one screen ============ */}
       <div
+        className="ci-rail"
         style={{
           display: "flex",
           flexDirection: "column",
-          gap: 14,
+          gap: 12,
           order: narrow ? 2 : 1,
+          minHeight: 0,
+          overflowY: narrow ? undefined : "auto",
+          paddingRight: narrow ? 0 : 2,
         }}
       >
         {/* File card */}
-        <div className="ci-card" style={{ padding: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div className="ci-card" style={{ padding: 10, flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div
               role="img"
               aria-label="Uploaded thumbnail"
               className="ci-checker-sm"
               style={{
-                width: 48,
-                height: 48,
-                borderRadius: 12,
+                width: 36,
+                height: 36,
+                borderRadius: 10,
                 border: "1.5px solid var(--line-soft)",
                 backgroundImage: originalUrl ? `url("${originalUrl}")` : undefined,
                 backgroundSize: "cover",
@@ -556,7 +707,7 @@ export function Editor({
               <p
                 style={{
                   margin: 0,
-                  fontSize: 13.5,
+                  fontSize: 12.5,
                   fontWeight: 650,
                   whiteSpace: "nowrap",
                   overflow: "hidden",
@@ -565,7 +716,7 @@ export function Editor({
               >
                 {file.name}
               </p>
-              <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>
+              <p style={{ margin: "1px 0 0", fontSize: 11, color: "var(--muted)", fontWeight: 500 }}>
                 {typeLabel(file.type)} · {fmtSize(file.size)}
                 {dims ? ` · ${dims.w} × ${dims.h}` : ""}
               </p>
@@ -575,7 +726,7 @@ export function Editor({
               onClick={onReplace}
               className="ci-btn"
               title="Replace image"
-              style={{ padding: "7px 12px", fontSize: 12.5, flexShrink: 0 }}
+              style={{ padding: "5px 10px", fontSize: 11.5, flexShrink: 0 }}
             >
               Replace
             </button>
@@ -583,57 +734,58 @@ export function Editor({
         </div>
 
         {/* Cutout settings */}
-        <div className="ci-card" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-          <div>
-            <p className="ci-label">Quality</p>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div
+          className="ci-card"
+          style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, flexShrink: 0 }}
+        >
+          <div style={railRow}>
+            <p className="ci-label" style={{ margin: 0 }}>
+              Quality
+            </p>
+            <div className="ci-seg ci-seg-sm">
               {(
                 [
-                  ["preview", "Fast", "quick draft"],
-                  ["hd", "HD", "sharpest edges"],
+                  ["preview", "Fast", "Quick draft"],
+                  ["hd", "HD", "Sharpest edges"],
                 ] as const
-              ).map(([key, label, sub]) => (
+              ).map(([key, label, tip]) => (
                 <button
                   key={key}
                   type="button"
-                  className="ci-tile"
+                  title={tip}
                   data-active={quality === key}
                   onClick={() => {
                     setQuality(key);
                     if (isDone && key !== quality) setSettingsDirty(true);
                   }}
                 >
-                  <span style={{ display: "block", fontSize: 14, fontWeight: 700 }}>{label}</span>
-                  <span style={{ display: "block", fontSize: 11, fontWeight: 500, marginTop: 2, opacity: 0.75 }}>
-                    {sub}
-                  </span>
+                  {label}
                 </button>
               ))}
             </div>
           </div>
-          <div>
-            <p className="ci-label">Edges</p>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div style={railRow}>
+            <p className="ci-label" style={{ margin: 0 }}>
+              Edges
+            </p>
+            <div className="ci-seg ci-seg-sm">
               {(
                 [
-                  ["default", "Crisp", "products, logos"],
-                  ["matting", "Soft", "hair, fur"],
+                  ["default", "Crisp", "Products and logos"],
+                  ["matting", "Soft", "Hair and fur"],
                 ] as const
-              ).map(([key, label, sub]) => (
+              ).map(([key, label, tip]) => (
                 <button
                   key={key}
                   type="button"
-                  className="ci-tile"
+                  title={tip}
                   data-active={edges === key}
                   onClick={() => {
                     setEdges(key);
                     if (isDone && key !== edges) setSettingsDirty(true);
                   }}
                 >
-                  <span style={{ display: "block", fontSize: 14, fontWeight: 700 }}>{label}</span>
-                  <span style={{ display: "block", fontSize: 11, fontWeight: 500, marginTop: 2, opacity: 0.75 }}>
-                    {sub}
-                  </span>
+                  {label}
                 </button>
               ))}
             </div>
@@ -644,7 +796,7 @@ export function Editor({
               onClick={process}
               disabled={isBusy}
               className="ci-btn ci-btn-primary font-display ci-pop"
-              style={{ width: "100%", padding: 13, fontSize: 15.5 }}
+              style={{ width: "100%", padding: 10, fontSize: 14 }}
             >
               {isBusy ? "Working…" : "Re-process"}
             </button>
@@ -652,10 +804,15 @@ export function Editor({
         </div>
 
         {/* Studio */}
-        <div className="ci-card" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div
+          className="ci-card"
+          style={{ padding: 12, display: "flex", flexDirection: "column", gap: 12, flexShrink: 0 }}
+        >
           <div>
-            <p className="ci-label">Backdrop</p>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <p className="ci-label" style={{ marginBottom: 6 }}>
+              Backdrop
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
               {SWATCHES.map((sw) => (
                 <button
                   key={sw.value}
@@ -665,7 +822,11 @@ export function Editor({
                   className={sw.value === "transparent" ? "ci-swatch ci-checker-sm" : "ci-swatch"}
                   data-active={backdrop === sw.value}
                   onClick={() => setBackdrop(sw.value)}
-                  style={sw.value === "transparent" ? undefined : { background: sw.value }}
+                  style={
+                    sw.value === "transparent"
+                      ? { width: 26, height: 26 }
+                      : { width: 26, height: 26, background: sw.value }
+                  }
                 />
               ))}
               <label
@@ -676,6 +837,8 @@ export function Editor({
                   position: "relative",
                   display: "inline-flex",
                   overflow: "hidden",
+                  width: 26,
+                  height: 26,
                   background:
                     backdrop === "custom"
                       ? customBg
@@ -696,9 +859,11 @@ export function Editor({
             </div>
           </div>
 
-          <div>
-            <p className="ci-label">Shadow</p>
-            <div className="ci-seg">
+          <div style={railRow}>
+            <p className="ci-label" style={{ margin: 0 }}>
+              Shadow
+            </p>
+            <div className="ci-seg ci-seg-sm">
               {(
                 [
                   [0, "Off"],
@@ -719,7 +884,7 @@ export function Editor({
           </div>
 
           <div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={railRow}>
               <p className="ci-label" style={{ margin: 0 }}>
                 Adjust
               </p>
@@ -731,7 +896,7 @@ export function Editor({
                     border: "none",
                     background: "none",
                     color: "var(--primary)",
-                    fontSize: 12,
+                    fontSize: 11.5,
                     fontWeight: 650,
                     cursor: "pointer",
                     fontFamily: "inherit",
@@ -749,15 +914,15 @@ export function Editor({
                 ["saturation", "Saturation"],
               ] as const
             ).map(([key, label]) => (
-              <label key={key} style={{ display: "block", marginTop: 10 }}>
+              <label key={key} style={{ display: "block", marginTop: 8 }}>
                 <span
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
-                    fontSize: 12.5,
+                    fontSize: 12,
                     fontWeight: 600,
                     color: "var(--muted)",
-                    marginBottom: 5,
+                    marginBottom: 4,
                   }}
                 >
                   {label}
@@ -780,230 +945,316 @@ export function Editor({
             ))}
           </div>
         </div>
-
-        {/* Export */}
-        {isDone && (
-          <div className="ci-card ci-pop" style={{ padding: 16 }}>
-            <p className="ci-label">Format</p>
-            <div className="ci-seg" style={{ marginBottom: 14 }}>
-              {(["png", "jpg", "webp"] as const).map((f) => (
-                <button key={f} type="button" data-active={format === f} onClick={() => setFormat(f)}>
-                  {f.toUpperCase()}
-                </button>
-              ))}
-            </div>
-            {format !== "png" && effectiveBackdrop === "transparent" && format === "jpg" && (
-              <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>
-                JPG has no transparency, so a white backdrop will be used.
-              </p>
-            )}
-            <p className="ci-label">Sizes</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-              {availableSizes.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  className="ci-size-row"
-                  data-active={sizes.has(p.id)}
-                  onClick={() => toggleSize(p.id)}
-                >
-                  <span style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                    <span className="tick" aria-hidden>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>
-                    </span>
-                    {p.label}
-                  </span>
-                  <span style={{ fontSize: 12, opacity: 0.8 }}>{p.dimsLabel}</span>
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              onClick={download}
-              disabled={downloading || sizes.size === 0}
-              className="ci-btn ci-btn-mint font-display"
-              style={{ marginTop: 14, width: "100%", padding: 13, fontSize: 15.5 }}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M12 3v13m0 0 5-5m-5 5-5-5M4 21h16" />
-              </svg>
-              {downloading
-                ? "Preparing…"
-                : `Download ${sizes.size > 1 ? `${sizes.size} sizes` : format.toUpperCase()}`}
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* ============ Stage ============ */}
+      {/* ============ Stage column ============ */}
       <div
-        className="ci-card"
         style={{
-          borderRadius: 22,
-          padding: 12,
           display: "flex",
           flexDirection: "column",
-          gap: 10,
-          minHeight: narrow ? "62vh" : "calc(100vh - 100px)",
+          gap: 12,
+          minWidth: 0,
+          minHeight: narrow ? undefined : 0,
           order: narrow ? 1 : 2,
         }}
       >
-        {/* Toolbar */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                padding: "5px 13px",
-                borderRadius: 999,
-                background: statusChip.bg,
-                color: statusChip.color,
-                fontSize: 12.5,
-                fontWeight: 700,
-                transition: "background 0.3s var(--ease)",
-              }}
-            >
-              {statusChip.label}
-            </span>
-            {isDone && (
-              <div className="ci-seg" role="tablist" aria-label="Preview mode">
-                {(
-                  [
-                    ["compare", "Compare"],
-                    ["result", "Result"],
-                    ["touchup", "Touch up"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    role="tab"
-                    aria-selected={view === key}
-                    data-active={view === key}
-                    onClick={() => {
-                      setView(key);
-                      resetViewport();
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
+        <div
+          className="ci-card"
+          style={{
+            borderRadius: 20,
+            padding: 12,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            flex: 1,
+            minHeight: narrow ? "62vh" : 0,
+          }}
+        >
+          {/* Toolbar */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "5px 13px",
+                  borderRadius: 999,
+                  background: statusChip.bg,
+                  color: statusChip.color,
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  transition: "background 0.3s var(--ease)",
+                }}
+              >
+                {statusChip.label}
+              </span>
+              {isDone && (
+                <div className="ci-seg" role="tablist" aria-label="Preview mode">
+                  {(
+                    [
+                      ["compare", "Compare"],
+                      ["result", "Result"],
+                      ["touchup", "Touch up"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={view === key}
+                      data-active={view === key}
+                      onClick={() => {
+                        setView(key);
+                        resetViewport();
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {isDone && view !== "compare" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <button type="button" aria-label="Zoom out" className="ci-btn" style={{ width: 30, height: 30, padding: 0, fontSize: 16 }} onClick={() => setZoom(zoomRef.current / 1.25)}>
+                  −
+                </button>
+                <button type="button" title="Reset zoom" className="ci-btn" style={{ minWidth: 54, height: 30, padding: "0 8px", fontSize: 12 }} onClick={resetViewport}>
+                  {zoomPct}%
+                </button>
+                <button type="button" aria-label="Zoom in" className="ci-btn" style={{ width: 30, height: 30, padding: 0, fontSize: 16 }} onClick={() => setZoom(zoomRef.current * 1.25)}>
+                  +
+                </button>
               </div>
             )}
           </div>
-          {isDone && view !== "compare" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <button type="button" aria-label="Zoom out" className="ci-btn" style={{ width: 30, height: 30, padding: 0, fontSize: 16 }} onClick={() => setZoom(zoomRef.current / 1.25)}>
-                −
+
+          {/* Touch-up toolbar */}
+          {isDone && view === "touchup" && (
+            <div
+              className="ci-pop"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                flexWrap: "wrap",
+                background: "var(--bg2)",
+                border: "1.5px solid var(--line-soft)",
+                borderRadius: 12,
+                padding: "7px 10px",
+              }}
+            >
+              <div className="ci-seg ci-seg-sm" style={{ background: "var(--card)" }}>
+                <button
+                  type="button"
+                  title="Remove leftover background"
+                  data-active={brushMode === "erase"}
+                  onClick={() => setBrushMode("erase")}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
+                    <path d="M22 21H7" />
+                    <path d="m5 11 9 9" />
+                  </svg>
+                  Erase
+                </button>
+                <button
+                  type="button"
+                  title="Paint the original back"
+                  data-active={brushMode === "restore"}
+                  onClick={() => setBrushMode("restore")}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08" />
+                    <path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z" />
+                  </svg>
+                  Restore
+                </button>
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>
+                Brush
+                <input
+                  type="range"
+                  className="ci-slider"
+                  min={8}
+                  max={120}
+                  value={brushSize}
+                  onChange={(e) => {
+                    setBrushSize(Number(e.target.value));
+                    previewBrush();
+                  }}
+                  style={{ width: 120 }}
+                />
+                <span style={{ minWidth: 36, color: "var(--ink)", fontWeight: 700 }}>{brushSize}px</span>
+              </label>
+              <span aria-hidden style={vDivider} />
+              <button
+                type="button"
+                onClick={undo}
+                disabled={undoCount === 0}
+                aria-label="Undo"
+                title="Undo (Ctrl+Z)"
+                className="ci-btn"
+                style={{ width: 32, height: 32, padding: 0 }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M9 14 4 9l5-5" />
+                  <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+                </svg>
               </button>
-              <button type="button" title="Reset zoom" className="ci-btn" style={{ minWidth: 54, height: 30, padding: "0 8px", fontSize: 12 }} onClick={resetViewport}>
-                {zoomPct}%
+              <button
+                type="button"
+                onClick={redo}
+                disabled={redoCount === 0}
+                aria-label="Redo"
+                title="Redo (Ctrl+Y)"
+                className="ci-btn"
+                style={{ width: 32, height: 32, padding: 0 }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="m15 14 5-5-5-5" />
+                  <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+                </svg>
               </button>
-              <button type="button" aria-label="Zoom in" className="ci-btn" style={{ width: 30, height: 30, padding: 0, fontSize: 16 }} onClick={() => setZoom(zoomRef.current * 1.25)}>
-                +
-              </button>
+              <span style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 500 }}>
+                The ring is your exact brush size · <span className="ci-kbd">[</span>{" "}
+                <span className="ci-kbd">]</span> resize · scroll to zoom
+              </span>
             </div>
           )}
-        </div>
 
-        {/* Touch-up toolbar */}
-        {isDone && view === "touchup" && (
+          {/* Canvas area */}
           <div
-            className="ci-pop"
+            ref={stageRef}
+            className={effectiveBackdrop === "transparent" ? "ci-checker" : undefined}
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              flexWrap: "wrap",
-              background: "var(--bg2)",
-              border: "1.5px solid var(--line-soft)",
+              position: "relative",
+              flex: 1,
+              minHeight: narrow ? 360 : 120,
               borderRadius: 14,
-              padding: "9px 12px",
+              overflow: "hidden",
+              border: "1.5px solid var(--line-soft)",
+              background: stageBackground,
+              transition: "background 0.25s var(--ease)",
             }}
           >
-            <div className="ci-seg" style={{ background: "var(--card)" }}>
-              {(
-                [
-                  ["erase", "Erase"],
-                  ["restore", "Restore"],
-                ] as const
-              ).map(([key, label]) => (
-                <button key={key} type="button" data-active={brushMode === key} onClick={() => setBrushMode(key)}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 12.5, fontWeight: 600, color: "var(--muted)" }}>
-              Brush
-              <input
-                type="range"
-                className="ci-slider"
-                min={8}
-                max={120}
-                value={brushSize}
-                onChange={(e) => setBrushSize(Number(e.target.value))}
-                style={{ width: 110 }}
-              />
-              <span style={{ minWidth: 32, color: "var(--ink)" }}>{brushSize}px</span>
-            </label>
-            <button type="button" onClick={undo} disabled={undoCount === 0} className="ci-btn" style={{ padding: "6px 14px", fontSize: 12.5 }}>
-              Undo
-            </button>
-            <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>
-              Erase removes leftovers · Restore paints the original back
-            </span>
-          </div>
-        )}
+            {/* Original while busy */}
+            {!isDone && originalUrl && (
+              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={originalUrl} alt="Your uploaded photo" style={{ ...fit, opacity: 0.7, filter: isBusy ? "saturate(0.7)" : undefined }} />
+              </div>
+            )}
 
-        {/* Canvas area */}
-        <div
-          ref={stageRef}
-          className={effectiveBackdrop === "transparent" ? "ci-checker" : undefined}
-          style={{
-            position: "relative",
-            flex: 1,
-            minHeight: 360,
-            borderRadius: 14,
-            overflow: "hidden",
-            border: "1.5px solid var(--line-soft)",
-            background: stageBackground,
-            transition: "background 0.25s var(--ease)",
-          }}
-        >
-          {/* Original while busy */}
-          {!isDone && originalUrl && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={originalUrl} alt="Your uploaded photo" style={{ ...fit, opacity: 0.7, filter: isBusy ? "saturate(0.7)" : undefined }} />
-            </div>
-          )}
-
-          {/* Result view */}
-          {isDone && view === "result" && resultUrl && (
-            <div
-              onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture(e.pointerId);
-                panStartRef.current = {
-                  x: e.clientX - panRef.current.x,
-                  y: e.clientY - panRef.current.y,
-                };
-              }}
-              onPointerMove={(e) => {
-                if (panStartRef.current) {
-                  panRef.current = {
-                    x: e.clientX - panStartRef.current.x,
-                    y: e.clientY - panStartRef.current.y,
+            {/* Result view */}
+            {isDone && view === "result" && resultUrl && (
+              <div
+                onPointerDown={(e) => {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  panStartRef.current = {
+                    x: e.clientX - panRef.current.x,
+                    y: e.clientY - panRef.current.y,
                   };
-                  applyTransform();
-                }
-              }}
-              onPointerUp={() => (panStartRef.current = null)}
-              onPointerCancel={() => (panStartRef.current = null)}
-              style={{ position: "absolute", inset: 0, cursor: "grab", touchAction: "none" }}
-            >
+                }}
+                onPointerMove={(e) => {
+                  if (panStartRef.current) {
+                    panRef.current = {
+                      x: e.clientX - panStartRef.current.x,
+                      y: e.clientY - panStartRef.current.y,
+                    };
+                    applyTransform();
+                  }
+                }}
+                onPointerUp={() => (panStartRef.current = null)}
+                onPointerCancel={() => (panStartRef.current = null)}
+                style={{ position: "absolute", inset: 0, cursor: "grab", touchAction: "none" }}
+              >
+                <div
+                  ref={zoomLayerRef}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 18,
+                    willChange: "transform",
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={resultUrl} alt="Cutout with background removed" className="ci-pop" style={{ ...fit, filter: previewFilter }} draggable={false} />
+                </div>
+              </div>
+            )}
+
+            {/* Compare view */}
+            {isDone && view === "compare" && resultUrl && (
+              <div
+                ref={compareRef}
+                onPointerDown={(e) => {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  compareDragRef.current = true;
+                  setComparePos(e.clientX);
+                }}
+                onPointerMove={(e) => {
+                  if (compareDragRef.current) setComparePos(e.clientX);
+                }}
+                onPointerUp={() => (compareDragRef.current = false)}
+                onPointerCancel={() => (compareDragRef.current = false)}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  touchAction: "none",
+                  userSelect: "none",
+                  cursor: "ew-resize",
+                  ["--pos" as string]: "50%",
+                }}
+              >
+                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={resultUrl} alt="After: background removed" style={{ ...fit, filter: previewFilter }} draggable={false} />
+                </div>
+                <div style={{ position: "absolute", inset: 0, overflow: "hidden", clipPath: "inset(0 calc(100% - var(--pos)) 0 0)" }}>
+                  <div style={{ position: "absolute", inset: 0, background: "var(--card)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
+                    {originalUrl && (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img src={originalUrl} alt="Before: original photo" style={fit} draggable={false} />
+                    )}
+                  </div>
+                </div>
+                <div style={{ position: "absolute", top: 0, bottom: 0, left: "var(--pos)", width: 3, background: "var(--ink)", transform: "translateX(-50%)", zIndex: 5 }}>
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "50%",
+                      left: "50%",
+                      transform: "translate(-50%, -50%)",
+                      width: 40,
+                      height: 40,
+                      borderRadius: "50%",
+                      background: "var(--primary)",
+                      boxShadow: "var(--shadow-lift)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
+                      <path d="M8 6l-4 6 4 6M16 6l4 6-4 6" />
+                    </svg>
+                  </div>
+                </div>
+                <span style={{ position: "absolute", top: 12, left: 12, padding: "4px 12px", borderRadius: 999, background: "var(--ink)", color: "var(--card)", fontSize: 12, fontWeight: 700 }}>
+                  Before
+                </span>
+                <span style={{ position: "absolute", top: 12, right: 12, padding: "4px 12px", borderRadius: 999, background: "var(--primary)", color: "#FFFFFF", fontSize: 12, fontWeight: 700 }}>
+                  After
+                </span>
+              </div>
+            )}
+
+            {/* Touch-up view */}
+            {isDone && view === "touchup" && (
               <div
                 ref={zoomLayerRef}
                 style={{
@@ -1016,194 +1267,193 @@ export function Editor({
                   willChange: "transform",
                 }}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={resultUrl} alt="Cutout with background removed" className="ci-pop" style={{ ...fit, filter: previewFilter }} draggable={false} />
+                <canvas
+                  ref={canvasRef}
+                  onPointerDown={onBrushDown}
+                  onPointerMove={onBrushMove}
+                  onPointerUp={onBrushUp}
+                  onPointerCancel={onBrushUp}
+                  onPointerEnter={moveRing}
+                  onPointerLeave={hideRing}
+                  style={{ maxWidth: "100%", maxHeight: "100%", touchAction: "none", cursor: "none" }}
+                />
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Compare view */}
-          {isDone && view === "compare" && resultUrl && (
-            <div
-              ref={compareRef}
-              onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture(e.pointerId);
-                compareDragRef.current = true;
-                setComparePos(e.clientX);
-              }}
-              onPointerMove={(e) => {
-                if (compareDragRef.current) setComparePos(e.clientX);
-              }}
-              onPointerUp={() => (compareDragRef.current = false)}
-              onPointerCancel={() => (compareDragRef.current = false)}
-              style={{
-                position: "absolute",
-                inset: 0,
-                touchAction: "none",
-                userSelect: "none",
-                cursor: "ew-resize",
-                ["--pos" as string]: "50%",
-              }}
-            >
-              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={resultUrl} alt="After: background removed" style={{ ...fit, filter: previewFilter }} draggable={false} />
-              </div>
-              <div style={{ position: "absolute", inset: 0, overflow: "hidden", clipPath: "inset(0 calc(100% - var(--pos)) 0 0)" }}>
-                <div style={{ position: "absolute", inset: 0, background: "var(--card)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
-                  {originalUrl && (
-                    /* eslint-disable-next-line @next/next/no-img-element */
-                    <img src={originalUrl} alt="Before: original photo" style={fit} draggable={false} />
-                  )}
-                </div>
-              </div>
-              <div style={{ position: "absolute", top: 0, bottom: 0, left: "var(--pos)", width: 3, background: "var(--ink)", transform: "translateX(-50%)", zIndex: 5 }}>
-                <div
-                  style={{
-                    position: "absolute",
-                    top: "50%",
-                    left: "50%",
-                    transform: "translate(-50%, -50%)",
-                    width: 40,
-                    height: 40,
-                    borderRadius: "50%",
-                    background: "var(--primary)",
-                    boxShadow: "var(--shadow-lift)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="2.5" strokeLinecap="round" aria-hidden>
-                    <path d="M8 6l-4 6 4 6M16 6l4 6-4 6" />
-                  </svg>
-                </div>
-              </div>
-              <span style={{ position: "absolute", top: 12, left: 12, padding: "4px 12px", borderRadius: 999, background: "var(--ink)", color: "var(--card)", fontSize: 12, fontWeight: 700 }}>
-                Before
-              </span>
-              <span style={{ position: "absolute", top: 12, right: 12, padding: "4px 12px", borderRadius: 999, background: "var(--primary)", color: "#FFFFFF", fontSize: 12, fontWeight: 700 }}>
-                After
-              </span>
-            </div>
-          )}
-
-          {/* Touch-up view */}
-          {isDone && view === "touchup" && (
-            <div
-              ref={zoomLayerRef}
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: 18,
-                willChange: "transform",
-              }}
-            >
-              <canvas
-                ref={canvasRef}
-                onPointerDown={onBrushDown}
-                onPointerMove={onBrushMove}
-                onPointerUp={onBrushUp}
-                onPointerCancel={onBrushUp}
-                style={{ maxWidth: "100%", maxHeight: "100%", touchAction: "none", cursor: "crosshair" }}
-              />
-            </div>
-          )}
-
-          {/* Busy overlay */}
-          {isBusy && (
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                zIndex: 10,
-                background: "var(--overlay)",
-                backdropFilter: "blur(4px)",
-                WebkitBackdropFilter: "blur(4px)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 16,
-              }}
-            >
-              <div style={{ display: "flex", gap: 9 }}>
-                {["var(--coral)", "var(--sunny)", "var(--mint)"].map((c, i) => (
-                  <span
-                    key={c}
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      background: c,
-                      animation: `ci-bounce 1s ease-in-out infinite ${i * 0.15}s`,
-                    }}
-                  />
-                ))}
-              </div>
-              <p className="font-display" style={{ margin: 0, fontWeight: 600, fontSize: 18 }}>
-                {status === "uploading" ? "Beaming your image up…" : BUSY_MSGS[msgIdx]}
-              </p>
-              {status === "uploading" && (
-                <div style={{ width: 210, height: 8, borderRadius: 999, background: "var(--bg2)", overflow: "hidden" }}>
-                  <div
-                    style={{
-                      height: "100%",
-                      borderRadius: 999,
-                      background: "var(--primary)",
-                      width: `${progress}%`,
-                      transition: "width 0.2s var(--ease)",
-                    }}
-                  />
-                </div>
-              )}
-              <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>
-                {elapsed >= 4 ? `${elapsed}s · HD usually takes under 10s` : " "}
-              </p>
-            </div>
-          )}
-
-          {/* Error overlay */}
-          {status === "error" && (
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                zIndex: 10,
-                background: "var(--overlay)",
-                backdropFilter: "blur(4px)",
-                WebkitBackdropFilter: "blur(4px)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: 20,
-                overflow: "auto",
-              }}
-            >
+            {/* Size-true brush cursor (kept outside the zoomed layer) */}
+            {isDone && view === "touchup" && (
               <div
-                role="alert"
-                className="ci-card ci-pop"
-                style={{ maxWidth: 460, borderColor: "var(--coral)", padding: 24, textAlign: "center" }}
+                ref={brushRingRef}
+                aria-hidden
+                className="ci-brush-ring"
+                data-mode={brushMode}
+                style={{ width: brushSize, height: brushSize }}
+              />
+            )}
+
+            {/* Busy overlay */}
+            {isBusy && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  zIndex: 10,
+                  background: "var(--overlay)",
+                  backdropFilter: "blur(4px)",
+                  WebkitBackdropFilter: "blur(4px)",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 16,
+                }}
               >
-                <p className="font-display" style={{ margin: 0, fontWeight: 600, fontSize: 19, color: "var(--coral)" }}>
-                  Hmm, that didn&rsquo;t work
+                <div style={{ display: "flex", gap: 9 }}>
+                  {["var(--coral)", "var(--sunny)", "var(--mint)"].map((c, i) => (
+                    <span
+                      key={c}
+                      style={{
+                        width: 14,
+                        height: 14,
+                        borderRadius: "50%",
+                        background: c,
+                        animation: `ci-bounce 1s ease-in-out infinite ${i * 0.15}s`,
+                      }}
+                    />
+                  ))}
+                </div>
+                <p className="font-display" style={{ margin: 0, fontWeight: 600, fontSize: 18 }}>
+                  {status === "uploading" ? "Beaming your image up…" : BUSY_MSGS[msgIdx]}
                 </p>
-                <p style={{ margin: "10px 0 0", fontSize: 14, color: "var(--muted)", lineHeight: 1.6 }}>{error}</p>
-                <button
-                  type="button"
-                  onClick={process}
-                  className="ci-btn ci-btn-primary font-display"
-                  style={{ marginTop: 16, padding: "10px 24px", fontSize: 14 }}
-                >
-                  Retry
-                </button>
+                {status === "uploading" && (
+                  <div style={{ width: 210, height: 8, borderRadius: 999, background: "var(--bg2)", overflow: "hidden" }}>
+                    <div
+                      style={{
+                        height: "100%",
+                        borderRadius: 999,
+                        background: "var(--primary)",
+                        width: `${progress}%`,
+                        transition: "width 0.2s var(--ease)",
+                      }}
+                    />
+                  </div>
+                )}
+                <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>
+                  {elapsed >= 4 ? `${elapsed}s · HD usually takes under 10s` : " "}
+                </p>
               </div>
-            </div>
-          )}
+            )}
+
+            {/* Error overlay */}
+            {status === "error" && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  zIndex: 10,
+                  background: "var(--overlay)",
+                  backdropFilter: "blur(4px)",
+                  WebkitBackdropFilter: "blur(4px)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 20,
+                  overflow: "auto",
+                }}
+              >
+                <div
+                  role="alert"
+                  className="ci-card ci-pop"
+                  style={{ maxWidth: 460, borderColor: "var(--coral)", padding: 24, textAlign: "center" }}
+                >
+                  <p className="font-display" style={{ margin: 0, fontWeight: 600, fontSize: 19, color: "var(--coral)" }}>
+                    Hmm, that didn&rsquo;t work
+                  </p>
+                  <p style={{ margin: "10px 0 0", fontSize: 14, color: "var(--muted)", lineHeight: 1.6 }}>{error}</p>
+                  <button
+                    type="button"
+                    onClick={process}
+                    className="ci-btn ci-btn-primary font-display"
+                    style={{ marginTop: 16, padding: "10px 24px", fontSize: 14 }}
+                  >
+                    Retry
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* Export bar */}
+        {isDone && (
+          <div
+            className="ci-card ci-pop"
+            style={{
+              padding: "10px 14px",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+              flexShrink: 0,
+            }}
+          >
+            <p className="ci-label" style={{ margin: 0 }}>
+              Export
+            </p>
+            <div className="ci-seg ci-seg-sm">
+              {(["png", "jpg", "webp"] as const).map((f) => (
+                <button key={f} type="button" data-active={format === f} onClick={() => setFormat(f)}>
+                  {f.toUpperCase()}
+                </button>
+              ))}
+            </div>
+            <span aria-hidden style={vDivider} />
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {availableSizes.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className="ci-size-row"
+                  data-active={sizes.has(p.id)}
+                  onClick={() => toggleSize(p.id)}
+                  title={p.dimsLabel ? `${p.label}: ${p.dimsLabel}` : p.label}
+                  style={{ width: "auto", padding: "6px 10px", fontSize: 12, gap: 7 }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <span className="tick" aria-hidden style={{ width: 15, height: 15, borderRadius: 5 }}>
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    </span>
+                    {p.label}
+                    {p.dimsLabel && (
+                      <span style={{ fontSize: 11, fontWeight: 500, opacity: 0.75 }}>{p.dimsLabel}</span>
+                    )}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {format === "jpg" && effectiveBackdrop === "transparent" && (
+              <span style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 500 }}>
+                JPG has no transparency, so a white backdrop will be used
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={download}
+              disabled={downloading || sizes.size === 0}
+              className="ci-btn ci-btn-mint font-display"
+              style={{ marginLeft: "auto", padding: "10px 22px", fontSize: 14.5 }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M12 3v13m0 0 5-5m-5 5-5-5M4 21h16" />
+              </svg>
+              {downloading
+                ? "Preparing…"
+                : `Download ${sizes.size > 1 ? `${sizes.size} sizes` : format.toUpperCase()}`}
+            </button>
+          </div>
+        )}
       </div>
     </main>
   );
