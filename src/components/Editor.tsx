@@ -687,8 +687,13 @@ export function Editor({
         maxWidth: 1500,
         margin: "0 auto",
         padding: 14,
-        display: "grid",
-        gridTemplateColumns: narrow ? "1fr" : "292px minmax(0, 1fr)",
+        // Narrow uses flex, not a single-column grid, so the stage can be
+        // sticky: a grid item's containing block is its own grid area, which
+        // gives sticky zero range, while a flex item's is the whole container.
+        // `order` works the same in both, so the stage still renders first.
+        display: narrow ? "flex" : "grid",
+        flexDirection: narrow ? "column" : undefined,
+        gridTemplateColumns: narrow ? undefined : "292px minmax(0, 1fr)",
         // minmax(0, 1fr) keeps the single row inside the cap so the rail
         // scrolls instead of clipping
         gridTemplateRows: narrow ? undefined : "minmax(0, 1fr)",
@@ -989,6 +994,13 @@ export function Editor({
           minWidth: 0,
           minHeight: narrow ? undefined : 0,
           order: narrow ? 1 : 2,
+          // Narrow layout stacks the stage above the controls, so scrolling
+          // down to Backdrop or Adjust used to push the preview off screen and
+          // you were picking colours blind. Pinning it under the 64px header
+          // keeps the result in view while the rail scrolls beneath it.
+          position: narrow ? "sticky" : undefined,
+          top: narrow ? 66 : undefined,
+          zIndex: narrow ? 20 : undefined,
         }}
       >
         <div
@@ -1000,7 +1012,9 @@ export function Editor({
             flexDirection: "column",
             gap: 10,
             flex: 1,
-            minHeight: narrow ? "62vh" : 0,
+            // Half the viewport leaves room for a usable stack of controls
+            // underneath on a phone, where 62vh left almost none.
+            minHeight: narrow ? "min(52vh, 420px)" : 0,
           }}
         >
           {/* Toolbar */}
@@ -1185,7 +1199,7 @@ export function Editor({
             style={{
               position: "relative",
               flex: 1,
-              minHeight: narrow ? 360 : 120,
+              minHeight: narrow ? 240 : 120,
               borderRadius: 14,
               overflow: "hidden",
               border: "1.5px solid var(--line-soft)",

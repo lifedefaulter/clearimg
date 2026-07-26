@@ -1,13 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Editor } from "./Editor";
-import {
-  ACCEPTED_EXTENSIONS,
-  ACCEPTED_TYPES,
-  MAX_FILE_SIZE,
-} from "@/lib/constants";
+import { ACCEPTED_TYPES, MAX_FILE_SIZE } from "@/lib/constants";
 
 type Theme = "light" | "dark";
 
@@ -73,14 +69,17 @@ export function StudioShell({ landing }: { landing: React.ReactNode }) {
     return () => document.removeEventListener("paste", onPaste);
   }, [selectFile]);
 
+  // The picker input is rendered into the document rather than created on the
+  // fly. iOS Safari does not reliably fire `change` on a detached input, which
+  // showed up as the photo library needing two attempts before the first pick
+  // registered. Clearing the value first also lets the same photo be chosen
+  // again after a replace.
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const openPicker = () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ACCEPTED_EXTENSIONS;
-    input.onchange = () => {
-      const f = input.files?.[0];
-      if (f) selectFile(f);
-    };
+    const input = fileInputRef.current;
+    if (!input) return;
+    input.value = "";
     input.click();
   };
 
@@ -94,6 +93,37 @@ export function StudioShell({ landing }: { landing: React.ReactNode }) {
         color: "var(--ink)",
       }}
     >
+      {/*
+        Kept mounted for the whole session, outside the landing/editor switch,
+        so "Replace image" reuses the same element. Hidden by size and opacity
+        rather than `display: none` or an off-screen offset: iOS Safari skips
+        the change event for inputs it does not treat as laid out. The accept
+        list is MIME types only, which is what makes iOS offer the Photo
+        Library and transcode HEIC to JPEG rather than handing back a file the
+        API cannot read.
+      */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPTED_TYPES.join(",")}
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) selectFile(f);
+        }}
+        style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: 1,
+          height: 1,
+          opacity: 0,
+          pointerEvents: "none",
+          zIndex: -1,
+        }}
+      />
+
       {/* Header */}
       <header
         style={{
