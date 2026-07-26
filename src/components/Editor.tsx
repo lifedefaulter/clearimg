@@ -69,9 +69,10 @@ export function Editor({
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
 
   // settings
-  // Fast by default: a first cutout lands in about a second, and HD is a
-  // single click away in the stage toolbar (it re-runs on the spot).
-  const [quality, setQuality] = useState<QualityLevel>("preview");
+  // Quality first: the initial result is the result users judge the product by.
+  // Fast remains available as an explicit draft mode.
+  const [quality, setQuality] = useState<QualityLevel>("hd");
+  const [resultQuality, setResultQuality] = useState<QualityLevel | null>(null);
   const [edges, setEdges] = useState<EdgeMode>("default");
   const [settingsDirty, setSettingsDirty] = useState(false);
 
@@ -102,6 +103,8 @@ export function Editor({
   // Single owner for the result object URL: revokes the previous URL on
   // every swap and keeps a ref in sync for event handlers.
   const resultUrlRef = useRef<string | null>(null);
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const requestIdRef = useRef(0);
   const setResultUrl = useCallback((url: string | null) => {
     if (resultUrlRef.current && resultUrlRef.current !== url) {
       URL.revokeObjectURL(resultUrlRef.current);
@@ -235,11 +238,14 @@ export function Editor({
     (override?: { quality?: QualityLevel; edges?: EdgeMode }) => {
       const nextQuality = override?.quality ?? quality;
       const nextEdges = override?.edges ?? edges;
+      const requestId = ++requestIdRef.current;
+      xhrRef.current?.abort();
       setStatus("uploading");
       setProgress(0);
       setElapsed(0);
       setMsgIdx(0);
       setError(null);
+      setResultQuality(null);
       setSettingsDirty(false);
       setUndoCount(0);
       setRedoCount(0);
@@ -253,9 +259,11 @@ export function Editor({
       fd.append("edges", nextEdges);
 
       const xhr = new XMLHttpRequest();
+      xhrRef.current = xhr;
       xhr.open("POST", "/api/remove-background");
       xhr.responseType = "blob";
       xhr.upload.onprogress = (e) => {
+        if (requestId !== requestIdRef.current) return;
         if (e.lengthComputable) {
           const pct = Math.round((e.loaded / e.total) * 100);
           setProgress(pct);
@@ -263,8 +271,11 @@ export function Editor({
         }
       };
       xhr.onload = () => {
+        if (requestId !== requestIdRef.current) return;
+        xhrRef.current = null;
         if (xhr.status >= 200 && xhr.status < 300) {
           setResultUrl(URL.createObjectURL(xhr.response as Blob));
+          setResultQuality(nextQuality);
           setStatus("done");
           setView("compare");
           resetViewport();
@@ -276,6 +287,7 @@ export function Editor({
           blob
             .text()
             .then((txt) => {
+              if (requestId !== requestIdRef.current) return;
               let msg = fallback;
               try {
                 const j = JSON.parse(txt) as { error?: string };
@@ -285,6 +297,7 @@ export function Editor({
               setStatus("error");
             })
             .catch(() => {
+              if (requestId !== requestIdRef.current) return;
               setError(fallback);
               setStatus("error");
             });
@@ -294,8 +307,13 @@ export function Editor({
         }
       };
       xhr.onerror = () => {
+        if (requestId !== requestIdRef.current) return;
+        xhrRef.current = null;
         setError("Network error. Check your connection and try again.");
         setStatus("error");
+      };
+      xhr.onabort = () => {
+        if (requestId === requestIdRef.current) xhrRef.current = null;
       };
       xhr.send(fd);
     },
@@ -314,6 +332,8 @@ export function Editor({
   // revoke result URL + pending timers on unmount
   useEffect(
     () => () => {
+      requestIdRef.current += 1;
+      xhrRef.current?.abort();
       if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
       window.clearTimeout(ringPreviewTimer.current);
     },
@@ -754,8 +774,8 @@ export function Editor({
             <div className="ci-seg ci-seg-sm">
               {(
                 [
-                  ["preview", "Fast", "Instant draft, the default"],
-                  ["hd", "HD", "Sharpest edges, re-runs in about 10s"],
+                  ["hd", "Best", "Recommended: sharpest edges, usually about 10s"],
+                  ["preview", "Fast draft", "Quicker, but may miss fine details"],
                 ] as const
               ).map(([key, label, tip]) => (
                 <button
@@ -763,13 +783,11 @@ export function Editor({
                   type="button"
                   title={tip}
                   data-active={quality === key}
+                  disabled={isBusy}
                   onClick={() => {
                     if (key === quality) return;
                     setQuality(key);
-                    // Re-run immediately so switching quality is one click.
-                    // Mid-flight, just flag it: the Re-process button appears.
-                    if (isBusy) setSettingsDirty(true);
-                    else process({ quality: key });
+                    process({ quality: key });
                   }}
                 >
                   {label}
@@ -793,11 +811,11 @@ export function Editor({
                   type="button"
                   title={tip}
                   data-active={edges === key}
+                  disabled={isBusy}
                   onClick={() => {
                     if (key === edges) return;
                     setEdges(key);
-                    if (isBusy) setSettingsDirty(true);
-                    else process({ edges: key });
+                    process({ edges: key });
                   }}
                 >
                   {label}
@@ -1028,7 +1046,7 @@ export function Editor({
                   ))}
                 </div>
               )}
-              {isDone && quality === "preview" && (
+              {isDone && resultQuality === "preview" && (
                 <button
                   type="button"
                   onClick={() => {

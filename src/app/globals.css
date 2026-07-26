@@ -202,6 +202,11 @@ body {
   box-shadow: var(--shadow-soft);
 }
 
+.ci-seg button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 /* Compact segmented control (rail rows, touch-up toolbar) */
 .ci-seg-sm {
   padding: 3px;
