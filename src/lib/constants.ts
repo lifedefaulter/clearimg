@@ -42,7 +42,7 @@ export const FAQ_ITEMS: { q: string; a: string }[] = [
   },
   {
     q: "How do I get the cleanest cutout?",
-    a: "Use HD quality (the default). For portraits, pets, or anything with fine hair, switch Edges to “Soft”, which runs a slower matting pass that keeps wispy details. You can also touch up any spot with the Erase and Restore brushes.",
+    a: "Your first cutout is made in Fast mode so it appears in about a second. For the cleanest result, hit “Sharpen in HD”, which re-runs the photo through a much heavier model that traces edges precisely. For portraits, pets, or anything with fine hair, also switch Edges to “Soft”, which runs a slower matting pass that keeps wispy details. You can touch up any spot with the Erase and Restore brushes.",
   },
   {
     q: "Can I change the background or fix the colors?",

@@ -69,7 +69,9 @@ export function Editor({
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
 
   // settings
-  const [quality, setQuality] = useState<QualityLevel>("hd");
+  // Fast by default: a first cutout lands in about a second, and HD is a
+  // single click away in the stage toolbar (it re-runs on the spot).
+  const [quality, setQuality] = useState<QualityLevel>("preview");
   const [edges, setEdges] = useState<EdgeMode>("default");
   const [settingsDirty, setSettingsDirty] = useState(false);
 
@@ -227,71 +229,78 @@ export function Editor({
   }, [setZoom, isDone]);
 
   // ---------- processing ----------
-  const process = useCallback(() => {
-    setStatus("uploading");
-    setProgress(0);
-    setElapsed(0);
-    setMsgIdx(0);
-    setError(null);
-    setSettingsDirty(false);
-    setUndoCount(0);
-    setRedoCount(0);
-    undoStackRef.current = [];
-    redoStackRef.current = [];
+  // Overrides let a settings click re-run with the value it just picked:
+  // state has not committed yet when the handler fires.
+  const process = useCallback(
+    (override?: { quality?: QualityLevel; edges?: EdgeMode }) => {
+      const nextQuality = override?.quality ?? quality;
+      const nextEdges = override?.edges ?? edges;
+      setStatus("uploading");
+      setProgress(0);
+      setElapsed(0);
+      setMsgIdx(0);
+      setError(null);
+      setSettingsDirty(false);
+      setUndoCount(0);
+      setRedoCount(0);
+      undoStackRef.current = [];
+      redoStackRef.current = [];
 
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("format", "png"); // backdrop/format/corrections applied client-side
-    fd.append("quality", quality);
-    fd.append("edges", edges);
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("format", "png"); // backdrop/format/corrections applied client-side
+      fd.append("quality", nextQuality);
+      fd.append("edges", nextEdges);
 
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/remove-background");
-    xhr.responseType = "blob";
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        setProgress(pct);
-        setStatus(pct >= 100 ? "processing" : "uploading");
-      }
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        setResultUrl(URL.createObjectURL(xhr.response as Blob));
-        setStatus("done");
-        setView("compare");
-        resetViewport();
-        return;
-      }
-      const fallback = `The server returned an error (${xhr.status}). Please try again.`;
-      const blob = xhr.response as Blob | null;
-      if (blob?.text) {
-        blob
-          .text()
-          .then((txt) => {
-            let msg = fallback;
-            try {
-              const j = JSON.parse(txt) as { error?: string };
-              if (j.error) msg = j.error;
-            } catch {}
-            setError(msg);
-            setStatus("error");
-          })
-          .catch(() => {
-            setError(fallback);
-            setStatus("error");
-          });
-      } else {
-        setError(fallback);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/remove-background");
+      xhr.responseType = "blob";
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setProgress(pct);
+          setStatus(pct >= 100 ? "processing" : "uploading");
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          setResultUrl(URL.createObjectURL(xhr.response as Blob));
+          setStatus("done");
+          setView("compare");
+          resetViewport();
+          return;
+        }
+        const fallback = `The server returned an error (${xhr.status}). Please try again.`;
+        const blob = xhr.response as Blob | null;
+        if (blob?.text) {
+          blob
+            .text()
+            .then((txt) => {
+              let msg = fallback;
+              try {
+                const j = JSON.parse(txt) as { error?: string };
+                if (j.error) msg = j.error;
+              } catch {}
+              setError(msg);
+              setStatus("error");
+            })
+            .catch(() => {
+              setError(fallback);
+              setStatus("error");
+            });
+        } else {
+          setError(fallback);
+          setStatus("error");
+        }
+      };
+      xhr.onerror = () => {
+        setError("Network error. Check your connection and try again.");
         setStatus("error");
-      }
-    };
-    xhr.onerror = () => {
-      setError("Network error. Check your connection and try again.");
-      setStatus("error");
-    };
-    xhr.send(fd);
-  }, [file, quality, edges, resetViewport, setResultUrl]);
+      };
+      xhr.send(fd);
+    },
+    [file, quality, edges, resetViewport, setResultUrl]
+  );
 
   // auto-process on mount
   const startedRef = useRef(false);
@@ -745,8 +754,8 @@ export function Editor({
             <div className="ci-seg ci-seg-sm">
               {(
                 [
-                  ["preview", "Fast", "Quick draft"],
-                  ["hd", "HD", "Sharpest edges"],
+                  ["preview", "Fast", "Instant draft, the default"],
+                  ["hd", "HD", "Sharpest edges, re-runs in about 10s"],
                 ] as const
               ).map(([key, label, tip]) => (
                 <button
@@ -755,8 +764,12 @@ export function Editor({
                   title={tip}
                   data-active={quality === key}
                   onClick={() => {
+                    if (key === quality) return;
                     setQuality(key);
-                    if (isDone && key !== quality) setSettingsDirty(true);
+                    // Re-run immediately so switching quality is one click.
+                    // Mid-flight, just flag it: the Re-process button appears.
+                    if (isBusy) setSettingsDirty(true);
+                    else process({ quality: key });
                   }}
                 >
                   {label}
@@ -781,8 +794,10 @@ export function Editor({
                   title={tip}
                   data-active={edges === key}
                   onClick={() => {
+                    if (key === edges) return;
                     setEdges(key);
-                    if (isDone && key !== edges) setSettingsDirty(true);
+                    if (isBusy) setSettingsDirty(true);
+                    else process({ edges: key });
                   }}
                 >
                   {label}
@@ -793,7 +808,7 @@ export function Editor({
           {(settingsDirty || status === "error") && (
             <button
               type="button"
-              onClick={process}
+              onClick={() => process()}
               disabled={isBusy}
               className="ci-btn ci-btn-primary font-display ci-pop"
               style={{ width: "100%", padding: 10, fontSize: 14 }}
@@ -1012,6 +1027,28 @@ export function Editor({
                     </button>
                   ))}
                 </div>
+              )}
+              {isDone && quality === "preview" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuality("hd");
+                    process({ quality: "hd" });
+                  }}
+                  className="ci-btn ci-pop"
+                  title="Re-run this image through the HD model for sharper edges"
+                  style={{
+                    padding: "5px 13px",
+                    fontSize: 12.5,
+                    borderColor: "var(--primary)",
+                    color: "var(--primary)",
+                  }}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M12 3v4M12 17v4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M3 12h4M17 12h4M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8" />
+                  </svg>
+                  Sharpen in HD
+                </button>
               )}
             </div>
             {isDone && view !== "compare" && (
@@ -1339,7 +1376,13 @@ export function Editor({
                   </div>
                 )}
                 <p style={{ margin: 0, fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>
-                  {elapsed >= 4 ? `${elapsed}s · HD usually takes under 10s` : " "}
+                  {elapsed >= 4
+                    ? `${elapsed}s · ${
+                        quality === "hd"
+                          ? "HD usually takes about 10s"
+                          : "large images take a little longer"
+                      }`
+                    : " "}
                 </p>
               </div>
             )}
@@ -1372,7 +1415,7 @@ export function Editor({
                   <p style={{ margin: "10px 0 0", fontSize: 14, color: "var(--muted)", lineHeight: 1.6 }}>{error}</p>
                   <button
                     type="button"
-                    onClick={process}
+                    onClick={() => process()}
                     className="ci-btn ci-btn-primary font-display"
                     style={{ marginTop: 16, padding: "10px 24px", fontSize: 14 }}
                   >
