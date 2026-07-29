@@ -495,7 +495,7 @@ body {
   }
 }
 
-@media (max-width: 600px) {
+@media (max-width: 959px) {
   .ci-stage-card {
     position: relative;
     padding: 6px !important;
@@ -503,7 +503,9 @@ body {
   }
 
   .ci-stage-card-touchup {
-    min-height: min(72dvh, 560px) !important;
+    height: calc(100dvh - 84px);
+    min-height: calc(100dvh - 84px) !important;
+    max-height: calc(100dvh - 84px);
   }
 
   .ci-stage-toolbar,
@@ -543,7 +545,25 @@ body {
   }
 
   .ci-stage-card-touchup .ci-zoom-controls {
-    display: none !important;
+    display: flex !important;
+    flex-direction: column;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+    gap: 4px !important;
+    padding: 4px;
+    border-radius: 14px;
+  }
+
+  .ci-stage-card-touchup .ci-zoom-controls .ci-btn {
+    width: 34px !important;
+    min-width: 34px !important;
+    height: 32px !important;
+    padding: 0 !important;
+  }
+
+  .ci-stage-card-touchup .ci-zoom-value {
+    font-size: 10px !important;
   }
 
   .ci-touchup-toolbar {

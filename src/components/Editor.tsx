@@ -550,11 +550,21 @@ export function Editor({
 
   // The ring lives in the stage (outside the zoomed layer), so its on-screen
   // size always equals brushSize, which is also the stroke's on-screen size.
+  const brushClientPoint = (e: React.PointerEvent) => ({
+    clientX: e.clientX,
+    // On touch screens, edit where the user can see: the ring and the actual
+    // stroke share this offset, so the finger never covers the working edge.
+    clientY:
+      e.clientY -
+      (e.pointerType === "touch" ? Math.max(30, brushSize / 2 + 16) : 0),
+  });
+
   const moveRing = (e: React.PointerEvent) => {
     const ring = brushRingRef.current;
     const stage = stageRef.current;
     if (!ring || !stage) return;
-    if (!isPointOnCanvas(e.clientX, e.clientY)) {
+    const brushPoint = brushClientPoint(e);
+    if (!isPointOnCanvas(brushPoint.clientX, brushPoint.clientY)) {
       overCanvasRef.current = false;
       ring.style.opacity = "0";
       return;
@@ -563,8 +573,8 @@ export function Editor({
     // clientLeft/Top: absolute children position from the padding box, while
     // getBoundingClientRect() is the border box (the stage has a 1.5px border)
     const rect = stage.getBoundingClientRect();
-    const x = e.clientX - rect.left - stage.clientLeft;
-    const y = e.clientY - rect.top - stage.clientTop;
+    const x = brushPoint.clientX - rect.left - stage.clientLeft;
+    const y = brushPoint.clientY - rect.top - stage.clientTop;
     overCanvasRef.current = true;
     ringPosRef.current = { x, y };
     ring.style.left = `${x}px`;
@@ -656,15 +666,16 @@ export function Editor({
         beginPinch();
         return;
       }
-      if (isPointOnCanvas(e.clientX, e.clientY)) {
+      const brushPoint = brushClientPoint(e);
+      if (isPointOnCanvas(brushPoint.clientX, brushPoint.clientY)) {
         moveRing(e);
         // Wait until the first move (or a tap release) before copying the
         // full-resolution canvas. A second finger can now start a pinch
         // without an expensive getImageData/putImageData round-trip.
         pendingBrushRef.current = {
           pointerId: e.pointerId,
-          clientX: e.clientX,
-          clientY: e.clientY,
+          clientX: brushPoint.clientX,
+          clientY: brushPoint.clientY,
         };
       }
       return;
@@ -718,7 +729,8 @@ export function Editor({
     }
 
     if (!drawingRef.current || drawingPointerRef.current !== e.pointerId) return;
-    const p = canvasPoint(e.clientX, e.clientY);
+    const brushPoint = brushClientPoint(e);
+    const p = canvasPoint(brushPoint.clientX, brushPoint.clientY);
     const r = (brushSize / 2) * p.scale;
     const last = lastPtRef.current ?? p;
     const dist = Math.hypot(p.x - last.x, p.y - last.y);
@@ -1072,9 +1084,7 @@ export function Editor({
 
         {/* Cutout settings */}
         <div
-          className={`ci-card ci-stage-card${
-            view === "touchup" ? " ci-stage-card-touchup" : ""
-          }`}
+          className="ci-card"
           style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, flexShrink: 0 }}
         >
           <div style={railRow}>
@@ -1303,13 +1313,15 @@ export function Editor({
           // down to Backdrop or Adjust used to push the preview off screen and
           // you were picking colours blind. The editor header is hidden on
           // phones, so pin the result directly to the top of the viewport.
-          position: narrow ? "sticky" : undefined,
-          top: narrow ? 0 : undefined,
-          zIndex: narrow ? 20 : undefined,
+          position: narrow && view !== "touchup" ? "sticky" : undefined,
+          top: narrow && view !== "touchup" ? 0 : undefined,
+          zIndex: narrow && view !== "touchup" ? 20 : undefined,
         }}
       >
         <div
-          className="ci-card"
+          className={`ci-card ci-stage-card${
+            view === "touchup" ? " ci-stage-card-touchup" : ""
+          }`}
           style={{
             borderRadius: 20,
             padding: 12,
@@ -1394,7 +1406,7 @@ export function Editor({
                 <button type="button" aria-label="Zoom out" className="ci-btn" style={{ width: 30, height: 30, padding: 0, fontSize: 16 }} onClick={() => setZoom(zoomRef.current / 1.25)}>
                   −
                 </button>
-                <button ref={zoomLabelRef} type="button" title="Reset zoom" className="ci-btn" style={{ minWidth: 54, height: 30, padding: "0 8px", fontSize: 12 }} onClick={resetViewport}>
+                <button ref={zoomLabelRef} type="button" title="Reset zoom" className="ci-btn ci-zoom-value" style={{ minWidth: 54, height: 30, padding: "0 8px", fontSize: 12 }} onClick={resetViewport}>
                   100%
                 </button>
                 <button type="button" aria-label="Zoom in" className="ci-btn" style={{ width: 30, height: 30, padding: 0, fontSize: 16 }} onClick={() => setZoom(zoomRef.current * 1.25)}>
