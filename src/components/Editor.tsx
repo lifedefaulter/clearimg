@@ -551,12 +551,14 @@ export function Editor({
   // The ring lives in the stage (outside the zoomed layer), so its on-screen
   // size always equals brushSize, which is also the stroke's on-screen size.
   const brushClientPoint = (e: React.PointerEvent) => ({
-    clientX: e.clientX,
+    clientX:
+      e.clientX -
+      (e.pointerType === "touch" ? Math.max(16, brushSize * 0.2) : 0),
     // On touch screens, edit where the user can see: the ring and the actual
-    // stroke share this offset, so the finger never covers the working edge.
+    // stroke share an upper-left offset, so the finger never covers the edge.
     clientY:
       e.clientY -
-      (e.pointerType === "touch" ? Math.max(30, brushSize / 2 + 16) : 0),
+      (e.pointerType === "touch" ? Math.max(44, brushSize / 2 + 22) : 0),
   });
 
   const moveRing = (e: React.PointerEvent) => {
