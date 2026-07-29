@@ -55,9 +55,13 @@ const SWATCHES: { value: string; label: string }[] = [
 export function Editor({
   file,
   onReplace,
+  theme,
+  onToggleTheme,
 }: {
   file: File;
   onReplace: () => void;
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
 }) {
   // ---------- core state ----------
   const [status, setStatus] = useState<Status>("uploading");
@@ -96,6 +100,7 @@ export function Editor({
   const [format, setFormat] = useState<OutputFormat>("png");
   const [sizes, setSizes] = useState<Set<SizePresetId>>(new Set(["original"]));
   const [downloading, setDownloading] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
   const [narrow, setNarrow] = useState(false);
 
@@ -909,7 +914,7 @@ export function Editor({
         width: "100%",
         maxWidth: 1500,
         margin: "0 auto",
-        padding: 14,
+        padding: narrow ? 8 : 14,
         // Narrow uses flex, not a single-column grid, so the stage can be
         // sticky: a grid item's containing block is its own grid area, which
         // gives sticky zero range, while a flex item's is the whole container.
@@ -920,8 +925,8 @@ export function Editor({
         // minmax(0, 1fr) keeps the single row inside the cap so the rail
         // scrolls instead of clipping
         gridTemplateRows: narrow ? undefined : "minmax(0, 1fr)",
-        gap: 12,
-        minHeight: narrow ? undefined : 0,
+        gap: narrow ? 8 : 12,
+        minHeight: narrow ? "100dvh" : 0,
         // cap at the viewport: the shell's min-height 100vh is indefinite, so
         // without this the grid content-sizes past the fold on short windows
         // (66px = 64px header + its 1.5px bottom border)
@@ -942,53 +947,55 @@ export function Editor({
           paddingRight: narrow ? 0 : 2,
         }}
       >
-        {/* File card */}
-        <div className="ci-card" style={{ padding: 10, flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div
-              role="img"
-              aria-label="Uploaded thumbnail"
-              className="ci-checker-sm"
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                border: "1.5px solid var(--line-soft)",
-                backgroundImage: originalUrl ? `url("${originalUrl}")` : undefined,
-                backgroundSize: "cover",
-                backgroundPosition: "center",
-                flexShrink: 0,
-              }}
-            />
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <p
+        {/* The mobile action bar replaces this card to keep controls above the fold. */}
+        {!narrow && (
+          <div className="ci-card" style={{ padding: 10, flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div
+                role="img"
+                aria-label="Uploaded thumbnail"
+                className="ci-checker-sm"
                 style={{
-                  margin: 0,
-                  fontSize: 12.5,
-                  fontWeight: 650,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  border: "1.5px solid var(--line-soft)",
+                  backgroundImage: originalUrl ? `url("${originalUrl}")` : undefined,
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                  flexShrink: 0,
                 }}
+              />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: 12.5,
+                    fontWeight: 650,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {file.name}
+                </p>
+                <p style={{ margin: "1px 0 0", fontSize: 11, color: "var(--muted)", fontWeight: 500 }}>
+                  {typeLabel(file.type)} · {fmtSize(file.size)}
+                  {dims ? ` · ${dims.w} × ${dims.h}` : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onReplace}
+                className="ci-btn"
+                title="Replace image"
+                style={{ padding: "5px 10px", fontSize: 11.5, flexShrink: 0 }}
               >
-                {file.name}
-              </p>
-              <p style={{ margin: "1px 0 0", fontSize: 11, color: "var(--muted)", fontWeight: 500 }}>
-                {typeLabel(file.type)} · {fmtSize(file.size)}
-                {dims ? ` · ${dims.w} × ${dims.h}` : ""}
-              </p>
+                Replace
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={onReplace}
-              className="ci-btn"
-              title="Replace image"
-              style={{ padding: "5px 10px", fontSize: 11.5, flexShrink: 0 }}
-            >
-              Replace
-            </button>
           </div>
-        </div>
+        )}
 
         {/* Cutout settings */}
         <div
@@ -1219,10 +1226,10 @@ export function Editor({
           order: narrow ? 1 : 2,
           // Narrow layout stacks the stage above the controls, so scrolling
           // down to Backdrop or Adjust used to push the preview off screen and
-          // you were picking colours blind. Pinning it under the 64px header
-          // keeps the result in view while the rail scrolls beneath it.
+          // you were picking colours blind. The editor header is hidden on
+          // phones, so pin the result directly to the top of the viewport.
           position: narrow ? "sticky" : undefined,
-          top: narrow ? 66 : undefined,
+          top: narrow ? 0 : undefined,
           zIndex: narrow ? 20 : undefined,
         }}
       >
@@ -1684,73 +1691,165 @@ export function Editor({
         </div>
 
         {/* Export bar */}
-        {isDone && (
+        {(isDone || narrow) && (
           <div
             className="ci-card ci-pop"
             style={{
-              padding: "10px 14px",
+              padding: narrow ? 8 : "10px 14px",
               display: "flex",
+              flexDirection: narrow ? "column" : "row",
               alignItems: "center",
-              gap: 10,
+              gap: narrow ? 8 : 10,
               flexWrap: "wrap",
               flexShrink: 0,
             }}
           >
-            <p className="ci-label" style={{ margin: 0 }}>
-              Export
-            </p>
-            <div className="ci-seg ci-seg-sm">
-              {(["png", "jpg", "webp"] as const).map((f) => (
-                <button key={f} type="button" data-active={format === f} onClick={() => setFormat(f)}>
-                  {f.toUpperCase()}
-                </button>
-              ))}
-            </div>
-            <span aria-hidden style={vDivider} />
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {availableSizes.map((p) => (
+            {narrow && (
+              <div
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 4,
+                }}
+              >
                 <button
-                  key={p.id}
                   type="button"
-                  className="ci-size-row"
-                  data-active={sizes.has(p.id)}
-                  onClick={() => toggleSize(p.id)}
-                  title={p.dimsLabel ? `${p.label}: ${p.dimsLabel}` : p.label}
-                  style={{ width: "auto", padding: "6px 10px", fontSize: 12, gap: 7 }}
+                  onClick={onReplace}
+                  aria-label="Choose a new image"
+                  className="ci-btn"
+                  style={{ minHeight: 38, padding: "0 8px", fontSize: 12.5, flexShrink: 0 }}
                 >
-                  <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                    <span className="tick" aria-hidden style={{ width: 15, height: 15, borderRadius: 5 }}>
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>
-                    </span>
-                    {p.label}
-                    {p.dimsLabel && (
-                      <span style={{ fontSize: 11, fontWeight: 500, opacity: 0.75 }}>{p.dimsLabel}</span>
-                    )}
-                  </span>
+                  New image
                 </button>
-              ))}
-            </div>
-            {format === "jpg" && effectiveBackdrop === "transparent" && (
-              <span style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 500 }}>
-                JPG has no transparency, so a white backdrop will be used
-              </span>
+                <button
+                  type="button"
+                  onClick={onToggleTheme}
+                  aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+                  className="ci-btn"
+                  style={{ width: 38, height: 38, padding: 0, flexShrink: 0 }}
+                >
+                  {theme === "dark" ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                      <circle cx="12" cy="12" r="4" />
+                      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+                    </svg>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportOpen((open) => !open)}
+                  aria-expanded={exportOpen}
+                  aria-controls="mobile-export-options"
+                  disabled={!isDone}
+                  className="ci-btn"
+                  style={{ minHeight: 38, padding: "0 8px", fontSize: 12.5, flexShrink: 0, gap: 5 }}
+                >
+                  Export
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                    style={{
+                      transform: exportOpen ? "rotate(180deg)" : undefined,
+                      transition: "transform 0.18s var(--ease)",
+                    }}
+                  >
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={download}
+                  disabled={!isDone || downloading || sizes.size === 0}
+                  className="ci-btn ci-btn-mint font-display"
+                  style={{ minHeight: 38, padding: "0 10px", fontSize: 13.5, flexShrink: 0 }}
+                >
+                  {downloading ? "Preparing…" : "Download"}
+                </button>
+              </div>
             )}
-            <button
-              type="button"
-              onClick={download}
-              disabled={downloading || sizes.size === 0}
-              className="ci-btn ci-btn-mint font-display"
-              style={{ marginLeft: "auto", padding: "10px 22px", fontSize: 14.5 }}
+
+            <div
+              id={narrow ? "mobile-export-options" : undefined}
+              style={{
+                width: narrow ? "100%" : "auto",
+                display: narrow && !exportOpen ? "none" : "flex",
+                alignItems: "center",
+                gap: 10,
+                flexWrap: "wrap",
+                flex: narrow ? undefined : 1,
+              }}
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="M12 3v13m0 0 5-5m-5 5-5-5M4 21h16" />
-              </svg>
-              {downloading
-                ? "Preparing…"
-                : `Download ${sizes.size > 1 ? `${sizes.size} sizes` : format.toUpperCase()}`}
-            </button>
+              <p className="ci-label" style={{ margin: 0 }}>
+                Export
+              </p>
+              <div className="ci-seg ci-seg-sm">
+                {(["png", "jpg", "webp"] as const).map((f) => (
+                  <button key={f} type="button" data-active={format === f} onClick={() => setFormat(f)}>
+                    {f.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <span aria-hidden style={vDivider} />
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {availableSizes.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="ci-size-row"
+                    data-active={sizes.has(p.id)}
+                    onClick={() => toggleSize(p.id)}
+                    title={p.dimsLabel ? `${p.label}: ${p.dimsLabel}` : p.label}
+                    style={{ width: "auto", padding: "6px 10px", fontSize: 12, gap: 7 }}
+                  >
+                    <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      <span className="tick" aria-hidden style={{ width: 15, height: 15, borderRadius: 5 }}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                      </span>
+                      {p.label}
+                      {p.dimsLabel && (
+                        <span style={{ fontSize: 11, fontWeight: 500, opacity: 0.75 }}>{p.dimsLabel}</span>
+                      )}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {format === "jpg" && effectiveBackdrop === "transparent" && (
+                <span style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 500 }}>
+                  JPG has no transparency, so a white backdrop will be used
+                </span>
+              )}
+              {!narrow && (
+                <button
+                  type="button"
+                  onClick={download}
+                  disabled={downloading || sizes.size === 0}
+                  className="ci-btn ci-btn-mint font-display"
+                  style={{ marginLeft: "auto", padding: "10px 22px", fontSize: 14.5 }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M12 3v13m0 0 5-5m-5 5-5-5M4 21h16" />
+                  </svg>
+                  {downloading
+                    ? "Preparing…"
+                    : `Download ${sizes.size > 1 ? `${sizes.size} sizes` : format.toUpperCase()}`}
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>

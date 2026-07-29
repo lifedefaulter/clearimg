@@ -369,6 +369,10 @@ body {
   background: transparent;
 }
 
+.ci-slider-brush::-webkit-slider-thumb {
+  margin-top: -5px;
+}
+
 .ci-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -472,6 +476,12 @@ body {
 @media (max-width: 560px) {
   .ci-nav-links {
     display: none !important;
+  }
+}
+
+@media (max-width: 959px) {
+  .ci-editor-header {
+    display: none;
   }
 }
 

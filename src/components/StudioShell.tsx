@@ -126,6 +126,7 @@ export function StudioShell({ landing }: { landing: React.ReactNode }) {
 
       {/* Header */}
       <header
+        className={file ? "ci-editor-header" : undefined}
         style={{
           position: "sticky",
           top: 0,
@@ -346,6 +347,8 @@ export function StudioShell({ landing }: { landing: React.ReactNode }) {
           key={`${file.name}-${file.size}-${file.lastModified}`}
           file={file}
           onReplace={openPicker}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
       )}
     </div>
