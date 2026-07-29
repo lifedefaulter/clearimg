@@ -275,6 +275,16 @@ body {
   color: var(--mint);
 }
 
+.ci-touchup-history {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ci-done-short {
+  display: none;
+}
+
 /* Keyboard hint chips */
 .ci-kbd {
   font-size: 10px;
@@ -482,6 +492,136 @@ body {
 @media (max-width: 959px) {
   .ci-editor-header {
     display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .ci-stage-card {
+    position: relative;
+    padding: 6px !important;
+    gap: 6px !important;
+  }
+
+  .ci-stage-card-touchup {
+    min-height: min(72dvh, 560px) !important;
+  }
+
+  .ci-stage-toolbar,
+  .ci-stage-toolbar-main {
+    flex-wrap: nowrap !important;
+    gap: 4px !important;
+  }
+
+  .ci-stage-toolbar-main {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .ci-status-chip {
+    display: none !important;
+  }
+
+  .ci-view-tabs {
+    width: 100%;
+    padding: 2px;
+  }
+
+  .ci-view-tabs button {
+    padding: 5px 8px;
+    font-size: 11.5px;
+  }
+
+  .ci-zoom-controls {
+    position: absolute;
+    top: 44px;
+    right: 9px;
+    z-index: 7;
+    padding: 3px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--card) 88%, transparent);
+    box-shadow: var(--shadow-soft);
+  }
+
+  .ci-stage-card-touchup .ci-zoom-controls {
+    display: none !important;
+  }
+
+  .ci-touchup-toolbar {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "modes history done"
+      "brush brush brush";
+    align-items: center;
+    gap: 5px 6px !important;
+    padding: 5px 6px !important;
+    flex-wrap: nowrap !important;
+  }
+
+  .ci-touchup-modes {
+    grid-area: modes;
+    min-width: 0;
+  }
+
+  .ci-touchup-modes button {
+    padding: 5px 8px;
+  }
+
+  .ci-touchup-history {
+    grid-area: history;
+    gap: 4px;
+  }
+
+  .ci-touchup-history .ci-btn {
+    width: 34px !important;
+    height: 34px !important;
+  }
+
+  .ci-touchup-history svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .ci-touchup-brush {
+    grid-area: brush;
+    min-width: 0;
+    width: 100%;
+    gap: 6px !important;
+  }
+
+  .ci-touchup-brush input {
+    width: auto !important;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .ci-touchup-brush-value {
+    min-width: 32px !important;
+    font-size: 11px;
+  }
+
+  .ci-touchup-done {
+    grid-area: done;
+    min-height: 34px !important;
+    padding: 0 10px !important;
+    margin-left: 0 !important;
+  }
+
+  .ci-touchup-hint,
+  .ci-touchup-divider {
+    display: none !important;
+  }
+
+  .ci-done-long {
+    display: none;
+  }
+
+  .ci-done-short {
+    display: inline;
+  }
+
+  .ci-stage-canvas {
+    min-height: 0 !important;
   }
 }
 

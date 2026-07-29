@@ -88,7 +88,6 @@ export function Editor({
 
   // view
   const [view, setView] = useState<View>("compare");
-  const [zoomPct, setZoomPct] = useState(100);
 
   // touch-up
   const [brushMode, setBrushMode] = useState<"erase" | "restore">("erase");
@@ -123,6 +122,7 @@ export function Editor({
   const zoomRef = useRef(1);
   const panRef = useRef({ x: 0, y: 0 });
   const rafRef = useRef(0);
+  const zoomLabelRef = useRef<HTMLButtonElement>(null);
   const panStartRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const pointersRef = useRef(new Map<number, { x: number; y: number }>());
   const pinchRef = useRef<{
@@ -143,6 +143,11 @@ export function Editor({
   const drawingRef = useRef(false);
   const drawingPointerRef = useRef<number | null>(null);
   const strokeSnapshotRef = useRef<ImageData | null>(null);
+  const pendingBrushRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
   const touchGestureRef = useRef(false);
   const spacePressedRef = useRef(false);
   const lastPtRef = useRef<{ x: number; y: number } | null>(null);
@@ -195,14 +200,18 @@ export function Editor({
 
   // ---------- zoom / pan (imperative for smoothness) ----------
   const applyTransform = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
+    // Keep one animation frame pending. It reads the latest refs, so rapid
+    // two-finger events collapse into one visual update instead of repeatedly
+    // cancelling frames and re-rendering the entire editor.
+    if (rafRef.current) return;
     rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0;
       const layer = zoomLayerRef.current;
       if (!layer) return;
       const { x, y } = panRef.current;
       layer.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${zoomRef.current})`;
       const pct = Math.round(zoomRef.current * 100);
-      setZoomPct((prev) => (prev === pct ? prev : pct));
+      if (zoomLabelRef.current) zoomLabelRef.current.textContent = `${pct}%`;
     });
   }, []);
 
@@ -234,6 +243,7 @@ export function Editor({
     pinchRef.current = null;
     pointersRef.current.clear();
     touchGestureRef.current = false;
+    pendingBrushRef.current = null;
     applyTransform();
   }, [applyTransform]);
 
@@ -443,6 +453,7 @@ export function Editor({
       xhrRef.current?.abort();
       if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current);
       window.clearTimeout(ringPreviewTimer.current);
+      cancelAnimationFrame(rafRef.current);
     },
     []
   );
@@ -484,12 +495,24 @@ export function Editor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
-  const canvasPoint = (e: React.PointerEvent) => {
+  const isPointOnCanvas = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  };
+
+  const canvasPoint = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
     return {
-      x: ((e.clientX - rect.left) / rect.width) * canvas.width,
-      y: ((e.clientY - rect.top) / rect.height) * canvas.height,
+      x: ((clientX - rect.left) / rect.width) * canvas.width,
+      y: ((clientY - rect.top) / rect.height) * canvas.height,
       scale: canvas.width / rect.width,
     };
   };
@@ -531,6 +554,11 @@ export function Editor({
     const ring = brushRingRef.current;
     const stage = stageRef.current;
     if (!ring || !stage) return;
+    if (!isPointOnCanvas(e.clientX, e.clientY)) {
+      overCanvasRef.current = false;
+      ring.style.opacity = "0";
+      return;
+    }
     window.clearTimeout(ringPreviewTimer.current);
     // clientLeft/Top: absolute children position from the padding box, while
     // getBoundingClientRect() is the border box (the stage has a 1.5px border)
@@ -582,10 +610,11 @@ export function Editor({
     drawingRef.current = false;
     drawingPointerRef.current = null;
     strokeSnapshotRef.current = null;
+    pendingBrushRef.current = null;
     lastPtRef.current = null;
   };
 
-  const beginBrushStroke = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const beginBrushStroke = (pointerId: number, clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current;
     if (!canvas || !ctx) return;
@@ -594,9 +623,9 @@ export function Editor({
       snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
     } catch {}
     drawingRef.current = true;
-    drawingPointerRef.current = e.pointerId;
+    drawingPointerRef.current = pointerId;
     strokeSnapshotRef.current = snapshot;
-    const p = canvasPoint(e);
+    const p = canvasPoint(clientX, clientY);
     lastPtRef.current = p;
     strokeAt(p.x, p.y, (brushSize / 2) * p.scale);
   };
@@ -612,7 +641,7 @@ export function Editor({
     return true;
   };
 
-  const onBrushDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const onBrushDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === "mouse" && e.button !== 0 && e.button !== 1) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -621,11 +650,24 @@ export function Editor({
       pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pointersRef.current.size >= 2) {
         touchGestureRef.current = true;
+        pendingBrushRef.current = null;
         cancelBrushStroke();
         hideRing();
         beginPinch();
         return;
       }
+      if (isPointOnCanvas(e.clientX, e.clientY)) {
+        moveRing(e);
+        // Wait until the first move (or a tap release) before copying the
+        // full-resolution canvas. A second finger can now start a pinch
+        // without an expensive getImageData/putImageData round-trip.
+        pendingBrushRef.current = {
+          pointerId: e.pointerId,
+          clientX: e.clientX,
+          clientY: e.clientY,
+        };
+      }
+      return;
     } else if (
       e.pointerType === "mouse" &&
       (spacePressedRef.current || e.button === 1)
@@ -639,19 +681,35 @@ export function Editor({
       return;
     }
 
-    beginBrushStroke(e);
+    if (!isPointOnCanvas(e.clientX, e.clientY)) return;
+    beginBrushStroke(e.pointerId, e.clientX, e.clientY);
   };
 
-  const onBrushMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const onBrushMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === "touch" && pointersRef.current.has(e.pointerId)) {
       pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pointersRef.current.size >= 2) {
+        hideRing();
         updatePinch();
         return;
       }
       if (touchGestureRef.current) {
         panFromPointer(e);
         return;
+      }
+      const pending = pendingBrushRef.current;
+      if (pending?.pointerId === e.pointerId || drawingPointerRef.current === e.pointerId) {
+        moveRing(e);
+      } else {
+        hideRing();
+      }
+      if (pending?.pointerId === e.pointerId) {
+        pendingBrushRef.current = null;
+        beginBrushStroke(
+          pending.pointerId,
+          pending.clientX,
+          pending.clientY
+        );
       }
     } else if (panFromPointer(e)) {
       return;
@@ -660,7 +718,7 @@ export function Editor({
     }
 
     if (!drawingRef.current || drawingPointerRef.current !== e.pointerId) return;
-    const p = canvasPoint(e);
+    const p = canvasPoint(e.clientX, e.clientY);
     const r = (brushSize / 2) * p.scale;
     const last = lastPtRef.current ?? p;
     const dist = Math.hypot(p.x - last.x, p.y - last.y);
@@ -675,7 +733,9 @@ export function Editor({
     lastPtRef.current = p;
   };
 
-  const onBrushUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const onBrushUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const interrupted =
+      e.type === "pointercancel" || e.type === "lostpointercapture";
     if (e.pointerType === "touch") {
       pointersRef.current.delete(e.pointerId);
       if (touchGestureRef.current) {
@@ -695,6 +755,19 @@ export function Editor({
         hideRing();
         return;
       }
+    }
+    const pending = pendingBrushRef.current;
+    if (pending?.pointerId === e.pointerId) {
+      pendingBrushRef.current = null;
+      if (interrupted) {
+        hideRing();
+        return;
+      }
+      beginBrushStroke(
+        pending.pointerId,
+        pending.clientX,
+        pending.clientY
+      );
     }
     if (panStartRef.current?.pointerId === e.pointerId) {
       panStartRef.current = null;
@@ -999,7 +1072,9 @@ export function Editor({
 
         {/* Cutout settings */}
         <div
-          className="ci-card"
+          className={`ci-card ci-stage-card${
+            view === "touchup" ? " ci-stage-card-touchup" : ""
+          }`}
           style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, flexShrink: 0 }}
         >
           <div style={railRow}>
@@ -1248,9 +1323,10 @@ export function Editor({
           }}
         >
           {/* Toolbar */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div className="ci-stage-toolbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div className="ci-stage-toolbar-main" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span
+                className="ci-status-chip"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -1266,7 +1342,7 @@ export function Editor({
                 {statusChip.label}
               </span>
               {isDone && (
-                <div className="ci-seg" role="tablist" aria-label="Preview mode">
+                <div className="ci-seg ci-view-tabs" role="tablist" aria-label="Preview mode">
                   {(
                     [
                       ["compare", "Compare"],
@@ -1285,7 +1361,7 @@ export function Editor({
                         resetViewport();
                       }}
                     >
-                      {label}
+                      {narrow && key === "touchup" ? "Touch" : label}
                     </button>
                   ))}
                 </div>
@@ -1314,12 +1390,12 @@ export function Editor({
               )}
             </div>
             {isDone && view !== "compare" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <div className="ci-zoom-controls" style={{ display: "flex", alignItems: "center", gap: 5 }}>
                 <button type="button" aria-label="Zoom out" className="ci-btn" style={{ width: 30, height: 30, padding: 0, fontSize: 16 }} onClick={() => setZoom(zoomRef.current / 1.25)}>
                   −
                 </button>
-                <button type="button" title="Reset zoom" className="ci-btn" style={{ minWidth: 54, height: 30, padding: "0 8px", fontSize: 12 }} onClick={resetViewport}>
-                  {zoomPct}%
+                <button ref={zoomLabelRef} type="button" title="Reset zoom" className="ci-btn" style={{ minWidth: 54, height: 30, padding: "0 8px", fontSize: 12 }} onClick={resetViewport}>
+                  100%
                 </button>
                 <button type="button" aria-label="Zoom in" className="ci-btn" style={{ width: 30, height: 30, padding: 0, fontSize: 16 }} onClick={() => setZoom(zoomRef.current * 1.25)}>
                   +
@@ -1331,7 +1407,7 @@ export function Editor({
           {/* Touch-up toolbar */}
           {isDone && view === "touchup" && (
             <div
-              className="ci-pop"
+              className="ci-pop ci-touchup-toolbar"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -1343,7 +1419,7 @@ export function Editor({
                 padding: "7px 10px",
               }}
             >
-              <div className="ci-seg ci-seg-sm" style={{ background: "var(--card)" }}>
+              <div className="ci-seg ci-seg-sm ci-touchup-modes" style={{ background: "var(--card)" }}>
                 <button
                   type="button"
                   title="Remove leftover background"
@@ -1370,8 +1446,8 @@ export function Editor({
                   Restore
                 </button>
               </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>
-                Brush
+              <label className="ci-touchup-brush" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>
+                <span className="ci-touchup-brush-label">Brush</span>
                 <input
                   type="range"
                   className="ci-slider ci-slider-brush"
@@ -1387,47 +1463,50 @@ export function Editor({
                     ["--ci-slider-fill" as string]: `${((brushSize - 8) / (120 - 8)) * 100}%`,
                   }}
                 />
-                <span style={{ minWidth: 36, color: "var(--ink)", fontWeight: 700 }}>{brushSize}px</span>
+                <span className="ci-touchup-brush-value" style={{ minWidth: 36, color: "var(--ink)", fontWeight: 700 }}>{brushSize}px</span>
               </label>
-              <span aria-hidden style={vDivider} />
-              <button
-                type="button"
-                onClick={undo}
-                disabled={undoCount === 0}
-                aria-label="Undo"
-                title="Undo (Ctrl+Z)"
-                className="ci-btn"
-                style={{ width: 38, height: 38, padding: 0 }}
-              >
-                <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="M9 14 4 9l5-5" />
-                  <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={redo}
-                disabled={redoCount === 0}
-                aria-label="Redo"
-                title="Redo (Ctrl+Y)"
-                className="ci-btn"
-                style={{ width: 38, height: 38, padding: 0 }}
-              >
-                <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="m15 14 5-5-5-5" />
-                  <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
-                </svg>
-              </button>
-              <span style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 500 }}>
+              <span className="ci-touchup-divider" aria-hidden style={vDivider} />
+              <div className="ci-touchup-history">
+                <button
+                  type="button"
+                  onClick={undo}
+                  disabled={undoCount === 0}
+                  aria-label="Undo"
+                  title="Undo (Ctrl+Z)"
+                  className="ci-btn"
+                  style={{ width: 38, height: 38, padding: 0 }}
+                >
+                  <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M9 14 4 9l5-5" />
+                    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={redo}
+                  disabled={redoCount === 0}
+                  aria-label="Redo"
+                  title="Redo (Ctrl+Y)"
+                  className="ci-btn"
+                  style={{ width: 38, height: 38, padding: 0 }}
+                >
+                  <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="m15 14 5-5-5-5" />
+                    <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+                  </svg>
+                </button>
+              </div>
+              <span className="ci-touchup-hint" style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 500 }}>
                 1 finger brushes · 2 fingers zoom &amp; move · scroll to zoom · Space + drag to move
               </span>
               <button
                 type="button"
                 onClick={finishTouchUp}
-                className="ci-btn ci-btn-mint font-display"
+                className="ci-btn ci-btn-mint font-display ci-touchup-done"
                 style={{ marginLeft: "auto", minHeight: 38, padding: "0 18px", fontSize: 13.5 }}
               >
-                Done editing
+                <span className="ci-done-long">Done editing</span>
+                <span className="ci-done-short">Done</span>
               </button>
             </div>
           )}
@@ -1435,7 +1514,7 @@ export function Editor({
           {/* Canvas area */}
           <div
             ref={stageRef}
-            className={effectiveBackdrop === "transparent" ? "ci-checker" : undefined}
+            className={`${effectiveBackdrop === "transparent" ? "ci-checker " : ""}ci-stage-canvas`}
             style={{
               position: "relative",
               flex: 1,
@@ -1465,7 +1544,7 @@ export function Editor({
                 style={{
                   position: "absolute",
                   inset: 0,
-                  cursor: zoomPct === 100 ? "default" : "grab",
+                  cursor: "grab",
                   touchAction: "none",
                 }}
               >
@@ -1556,27 +1635,35 @@ export function Editor({
             {/* Touch-up view */}
             {isDone && view === "touchup" && (
               <div
-                ref={zoomLayerRef}
+                onPointerDown={onBrushDown}
+                onPointerMove={onBrushMove}
+                onPointerUp={onBrushUp}
+                onPointerCancel={onBrushUp}
+                onLostPointerCapture={onBrushUp}
+                onPointerLeave={hideRing}
                 style={{
                   position: "absolute",
                   inset: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: 18,
-                  willChange: "transform",
+                  touchAction: "none",
                 }}
               >
-                <canvas
-                  ref={canvasRef}
-                  onPointerDown={onBrushDown}
-                  onPointerMove={onBrushMove}
-                  onPointerUp={onBrushUp}
-                  onPointerCancel={onBrushUp}
-                  onPointerEnter={moveRing}
-                  onPointerLeave={hideRing}
-                  style={{ maxWidth: "100%", maxHeight: "100%", touchAction: "none", cursor: "none" }}
-                />
+                <div
+                  ref={zoomLayerRef}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 18,
+                    willChange: "transform",
+                  }}
+                >
+                  <canvas
+                    ref={canvasRef}
+                    style={{ maxWidth: "100%", maxHeight: "100%", cursor: "none" }}
+                  />
+                </div>
               </div>
             )}
 
