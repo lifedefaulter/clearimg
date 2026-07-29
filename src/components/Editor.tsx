@@ -118,7 +118,14 @@ export function Editor({
   const zoomRef = useRef(1);
   const panRef = useRef({ x: 0, y: 0 });
   const rafRef = useRef(0);
-  const panStartRef = useRef<{ x: number; y: number } | null>(null);
+  const panStartRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{
+    distance: number;
+    zoom: number;
+    anchorX: number;
+    anchorY: number;
+  } | null>(null);
 
   const compareRef = useRef<HTMLDivElement>(null);
   const compareDragRef = useRef(false);
@@ -129,6 +136,10 @@ export function Editor({
   const undoStackRef = useRef<ImageData[]>([]);
   const redoStackRef = useRef<ImageData[]>([]);
   const drawingRef = useRef(false);
+  const drawingPointerRef = useRef<number | null>(null);
+  const strokeSnapshotRef = useRef<ImageData | null>(null);
+  const touchGestureRef = useRef(false);
+  const spacePressedRef = useRef(false);
   const lastPtRef = useRef<{ x: number; y: number } | null>(null);
   const brushRingRef = useRef<HTMLDivElement>(null);
   const ringPreviewTimer = useRef(0);
@@ -214,22 +225,113 @@ export function Editor({
   const resetViewport = useCallback(() => {
     zoomRef.current = 1;
     panRef.current = { x: 0, y: 0 };
+    panStartRef.current = null;
+    pinchRef.current = null;
+    pointersRef.current.clear();
+    touchGestureRef.current = false;
     applyTransform();
   }, [applyTransform]);
+
+  const beginPinch = useCallback(() => {
+    const stage = stageRef.current;
+    const points = [...pointersRef.current.values()];
+    if (!stage || points.length < 2) return;
+    const [a, b] = points;
+    const rect = stage.getBoundingClientRect();
+    const centerX = (a.x + b.x) / 2 - rect.left - rect.width / 2;
+    const centerY = (a.y + b.y) / 2 - rect.top - rect.height / 2;
+    pinchRef.current = {
+      distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      zoom: zoomRef.current,
+      anchorX: (centerX - panRef.current.x) / zoomRef.current,
+      anchorY: (centerY - panRef.current.y) / zoomRef.current,
+    };
+    panStartRef.current = null;
+  }, []);
+
+  const updatePinch = useCallback(() => {
+    const stage = stageRef.current;
+    const pinch = pinchRef.current;
+    const points = [...pointersRef.current.values()];
+    if (!stage || !pinch || points.length < 2) return;
+    const [a, b] = points;
+    const rect = stage.getBoundingClientRect();
+    const centerX = (a.x + b.x) / 2 - rect.left - rect.width / 2;
+    const centerY = (a.y + b.y) / 2 - rect.top - rect.height / 2;
+    const distance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+    const nextZoom = Math.max(0.2, Math.min(6, pinch.zoom * (distance / pinch.distance)));
+    zoomRef.current = nextZoom;
+    panRef.current = {
+      x: centerX - pinch.anchorX * nextZoom,
+      y: centerY - pinch.anchorY * nextZoom,
+    };
+    applyTransform();
+  }, [applyTransform]);
+
+  const onViewportPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) {
+      beginPinch();
+      return;
+    }
+    if (Math.abs(zoomRef.current - 1) < 0.001) return;
+    panStartRef.current = {
+      pointerId: e.pointerId,
+      x: e.clientX - panRef.current.x,
+      y: e.clientY - panRef.current.y,
+    };
+  };
+
+  const onViewportPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointersRef.current.has(e.pointerId)) return;
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) {
+      updatePinch();
+      return;
+    }
+    const start = panStartRef.current;
+    if (!start || start.pointerId !== e.pointerId) return;
+    panRef.current = {
+      x: e.clientX - start.x,
+      y: e.clientY - start.y,
+    };
+    applyTransform();
+  };
+
+  const endViewportPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pinchRef.current) {
+      pinchRef.current = null;
+      const remaining = [...pointersRef.current.entries()][0];
+      if (remaining && Math.abs(zoomRef.current - 1) >= 0.001) {
+        const [pointerId, point] = remaining;
+        panStartRef.current = {
+          pointerId,
+          x: point.x - panRef.current.x,
+          y: point.y - panRef.current.y,
+        };
+      }
+    } else if (panStartRef.current?.pointerId === e.pointerId) {
+      panStartRef.current = null;
+    }
+  };
 
   // native wheel listener (React's is passive; we need preventDefault)
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
     const onWheel = (e: WheelEvent) => {
-      if (!resultUrlRef.current) return;
+      if (!resultUrlRef.current || view === "compare") return;
       e.preventDefault();
       const dir = e.deltaY < 0 ? 1.12 : 1 / 1.12;
       setZoom(zoomRef.current * dir, e.clientX, e.clientY);
     };
     stage.addEventListener("wheel", onWheel, { passive: false });
     return () => stage.removeEventListener("wheel", onWheel);
-  }, [setZoom, isDone]);
+  }, [setZoom, isDone, view]);
 
   // ---------- processing ----------
   // Overrides let a settings click re-run with the value it just picked:
@@ -466,28 +568,93 @@ export function Editor({
     }, 700);
   }, []);
 
-  const onBrushDown = (e: React.PointerEvent) => {
+  const cancelBrushStroke = () => {
+    const snapshot = strokeSnapshotRef.current;
+    const ctx = ctxRef.current;
+    if (drawingRef.current && snapshot && ctx) {
+      ctx.putImageData(snapshot, 0, 0);
+    }
+    drawingRef.current = false;
+    drawingPointerRef.current = null;
+    strokeSnapshotRef.current = null;
+    lastPtRef.current = null;
+  };
+
+  const beginBrushStroke = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current;
     if (!canvas || !ctx) return;
-    e.preventDefault();
-    canvas.setPointerCapture(e.pointerId);
+    let snapshot: ImageData | null = null;
     try {
-      undoStackRef.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
-      if (undoStackRef.current.length > HISTORY_LIMIT) undoStackRef.current.shift();
-      setUndoCount(undoStackRef.current.length);
+      snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
     } catch {}
-    redoStackRef.current = [];
-    setRedoCount(0);
     drawingRef.current = true;
+    drawingPointerRef.current = e.pointerId;
+    strokeSnapshotRef.current = snapshot;
     const p = canvasPoint(e);
     lastPtRef.current = p;
     strokeAt(p.x, p.y, (brushSize / 2) * p.scale);
   };
 
-  const onBrushMove = (e: React.PointerEvent) => {
-    moveRing(e);
-    if (!drawingRef.current) return;
+  const panFromPointer = (e: React.PointerEvent) => {
+    const start = panStartRef.current;
+    if (!start || start.pointerId !== e.pointerId) return false;
+    panRef.current = {
+      x: e.clientX - start.x,
+      y: e.clientY - start.y,
+    };
+    applyTransform();
+    return true;
+  };
+
+  const onBrushDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0 && e.button !== 1) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+
+    if (e.pointerType === "touch") {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointersRef.current.size >= 2) {
+        touchGestureRef.current = true;
+        cancelBrushStroke();
+        hideRing();
+        beginPinch();
+        return;
+      }
+    } else if (
+      e.pointerType === "mouse" &&
+      (spacePressedRef.current || e.button === 1)
+    ) {
+      panStartRef.current = {
+        pointerId: e.pointerId,
+        x: e.clientX - panRef.current.x,
+        y: e.clientY - panRef.current.y,
+      };
+      hideRing();
+      return;
+    }
+
+    beginBrushStroke(e);
+  };
+
+  const onBrushMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === "touch" && pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointersRef.current.size >= 2) {
+        updatePinch();
+        return;
+      }
+      if (touchGestureRef.current) {
+        panFromPointer(e);
+        return;
+      }
+    } else if (panFromPointer(e)) {
+      return;
+    } else {
+      moveRing(e);
+    }
+
+    if (!drawingRef.current || drawingPointerRef.current !== e.pointerId) return;
     const p = canvasPoint(e);
     const r = (brushSize / 2) * p.scale;
     const last = lastPtRef.current ?? p;
@@ -503,12 +670,55 @@ export function Editor({
     lastPtRef.current = p;
   };
 
-  const onBrushUp = (e: React.PointerEvent) => {
+  const onBrushUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === "touch") {
+      pointersRef.current.delete(e.pointerId);
+      if (touchGestureRef.current) {
+        pinchRef.current = null;
+        const remaining = [...pointersRef.current.entries()][0];
+        if (remaining) {
+          const [pointerId, point] = remaining;
+          panStartRef.current = {
+            pointerId,
+            x: point.x - panRef.current.x,
+            y: point.y - panRef.current.y,
+          };
+        } else {
+          panStartRef.current = null;
+          touchGestureRef.current = false;
+        }
+        hideRing();
+        return;
+      }
+    }
+    if (panStartRef.current?.pointerId === e.pointerId) {
+      panStartRef.current = null;
+      hideRing();
+      return;
+    }
     if (e.pointerType !== "mouse") hideRing();
-    if (!drawingRef.current) return;
+    if (!drawingRef.current || drawingPointerRef.current !== e.pointerId) return;
+    const snapshot = strokeSnapshotRef.current;
+    if (snapshot) {
+      undoStackRef.current.push(snapshot);
+      if (undoStackRef.current.length > HISTORY_LIMIT) undoStackRef.current.shift();
+      setUndoCount(undoStackRef.current.length);
+    }
+    redoStackRef.current = [];
+    setRedoCount(0);
     drawingRef.current = false;
+    drawingPointerRef.current = null;
+    strokeSnapshotRef.current = null;
+    lastPtRef.current = null;
     commitCanvas();
   };
+
+  const finishTouchUp = useCallback(() => {
+    if (drawingRef.current) return;
+    commitCanvas();
+    setView("result");
+    resetViewport();
+  }, [commitCanvas, resetViewport]);
 
   const undo = useCallback(() => {
     const ctx = ctxRef.current;
@@ -555,6 +765,11 @@ export function Editor({
       ) {
         return;
       }
+      if (e.code === "Space") {
+        e.preventDefault();
+        spacePressedRef.current = true;
+        return;
+      }
       // e.code: physical key, so shortcuts work on non-Latin keyboard layouts
       if ((e.ctrlKey || e.metaKey) && (e.code === "KeyZ" || e.key.toLowerCase() === "z")) {
         e.preventDefault();
@@ -571,8 +786,16 @@ export function Editor({
         previewBrush();
       }
     };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") spacePressedRef.current = false;
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      spacePressedRef.current = false;
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+    };
   }, [isDone, view, undo, redo, previewBrush]);
 
   // ---------- export ----------
@@ -653,7 +876,7 @@ export function Editor({
   const statusChip = {
     uploading: { label: `Uploading ${progress}%`, bg: "var(--sunny)", color: "#251E3A" },
     processing: { label: "Processing", bg: "var(--sunny)", color: "#251E3A" },
-    done: { label: "Done", bg: "var(--mint)", color: "#FFFFFF" },
+    done: { label: "Ready", bg: "var(--mint)", color: "#FFFFFF" },
     error: { label: "Error", bg: "var(--coral)", color: "#FFFFFF" },
   }[status];
 
@@ -1144,7 +1367,7 @@ export function Editor({
                 Brush
                 <input
                   type="range"
-                  className="ci-slider"
+                  className="ci-slider ci-slider-brush"
                   min={8}
                   max={120}
                   value={brushSize}
@@ -1152,7 +1375,10 @@ export function Editor({
                     setBrushSize(Number(e.target.value));
                     previewBrush();
                   }}
-                  style={{ width: 120 }}
+                  style={{
+                    width: 140,
+                    ["--ci-slider-fill" as string]: `${((brushSize - 8) / (120 - 8)) * 100}%`,
+                  }}
                 />
                 <span style={{ minWidth: 36, color: "var(--ink)", fontWeight: 700 }}>{brushSize}px</span>
               </label>
@@ -1164,9 +1390,9 @@ export function Editor({
                 aria-label="Undo"
                 title="Undo (Ctrl+Z)"
                 className="ci-btn"
-                style={{ width: 32, height: 32, padding: 0 }}
+                style={{ width: 38, height: 38, padding: 0 }}
               >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                   <path d="M9 14 4 9l5-5" />
                   <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
                 </svg>
@@ -1178,17 +1404,24 @@ export function Editor({
                 aria-label="Redo"
                 title="Redo (Ctrl+Y)"
                 className="ci-btn"
-                style={{ width: 32, height: 32, padding: 0 }}
+                style={{ width: 38, height: 38, padding: 0 }}
               >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                   <path d="m15 14 5-5-5-5" />
                   <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
                 </svg>
               </button>
               <span style={{ fontSize: 11.5, color: "var(--muted)", fontWeight: 500 }}>
-                The ring is your exact brush size · <span className="ci-kbd">[</span>{" "}
-                <span className="ci-kbd">]</span> resize · scroll to zoom
+                1 finger brushes · 2 fingers zoom &amp; move · scroll to zoom · Space + drag to move
               </span>
+              <button
+                type="button"
+                onClick={finishTouchUp}
+                className="ci-btn ci-btn-mint font-display"
+                style={{ marginLeft: "auto", minHeight: 38, padding: "0 18px", fontSize: 13.5 }}
+              >
+                Done editing
+              </button>
             </div>
           )}
 
@@ -1218,25 +1451,16 @@ export function Editor({
             {/* Result view */}
             {isDone && view === "result" && resultUrl && (
               <div
-                onPointerDown={(e) => {
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  panStartRef.current = {
-                    x: e.clientX - panRef.current.x,
-                    y: e.clientY - panRef.current.y,
-                  };
+                onPointerDown={onViewportPointerDown}
+                onPointerMove={onViewportPointerMove}
+                onPointerUp={endViewportPointer}
+                onPointerCancel={endViewportPointer}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  cursor: zoomPct === 100 ? "default" : "grab",
+                  touchAction: "none",
                 }}
-                onPointerMove={(e) => {
-                  if (panStartRef.current) {
-                    panRef.current = {
-                      x: e.clientX - panStartRef.current.x,
-                      y: e.clientY - panStartRef.current.y,
-                    };
-                    applyTransform();
-                  }
-                }}
-                onPointerUp={() => (panStartRef.current = null)}
-                onPointerCancel={() => (panStartRef.current = null)}
-                style={{ position: "absolute", inset: 0, cursor: "grab", touchAction: "none" }}
               >
                 <div
                   ref={zoomLayerRef}
