@@ -94,6 +94,7 @@ export async function POST(request: NextRequest) {
       headers: {
         "Content-Type": contentType,
         "Cache-Control": "no-store",
+        "X-ClearImg-Proxy-Version": "stream-v1",
       },
     });
   } catch {
