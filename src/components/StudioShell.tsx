@@ -271,7 +271,8 @@ export function StudioShell({ landing }: { landing: React.ReactNode }) {
                 free, in HD, in seconds
               </h1>
               <p style={{ fontSize: 18, color: "var(--muted)", margin: "18px auto 0", maxWidth: 560, lineHeight: 1.6 }}>
-                Upload a photo and get a crisp transparent cutout, then fix the
+                Photos, products, portraits, logos, signatures, and handwriting.
+                Upload one and get a crisp transparent PNG, then fix the
                 lighting, pick a backdrop, and download every size you need.
                 No signup, no watermark.
               </p>

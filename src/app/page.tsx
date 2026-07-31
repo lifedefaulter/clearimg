@@ -12,7 +12,7 @@ const jsonLd = {
       applicationCategory: "MultimediaApplication",
       operatingSystem: "Web",
       description:
-        "Free AI background remover with HD edge quality, color corrections, backdrops, studio shadows, and multi-size downloads.",
+        "Free AI background remover for photos, products, portraits, logos, signatures, and handwriting, with HD edge quality, color corrections, backdrops, studio shadows, and multi-size downloads.",
       offers: {
         "@type": "Offer",
         price: "0",
@@ -20,6 +20,10 @@ const jsonLd = {
       },
       featureList: [
         "AI background removal in HD",
+        "Signature and handwriting background removal",
+        "Light and dark ink extraction with no edge halo",
+        "Logo and graphic cutouts to transparent PNG",
+        "Product photo and portrait cutouts",
         "Transparent, solid color, or custom backdrops",
         "Soft studio shadows",
         "Brightness, contrast, and saturation corrections",
