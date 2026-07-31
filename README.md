@@ -36,4 +36,13 @@ clearimg-app/src/
 
 ## Deploy
 
-Deploy to Vercel (or similar) with `CLEARIMG_API_URL` and `CLEARIMG_API_KEY` set in project environment variables.
+Production runs as a Hostinger Node.js application for `clearimg.net`. Pushing
+`main` to `origin` triggers Hostinger's connected-repository build and atomic
+release switch. Keep `CLEARIMG_API_URL` and `CLEARIMG_API_KEY` configured in
+the Hostinger application environment.
+
+After a deploy, verify both layers:
+
+- `https://api.clearimg.net/health` reports the expected API version and model.
+- A request through `https://clearimg.net/api/remove-background` succeeds; the
+  streamed proxy release identifies itself with `X-ClearImg-Proxy-Version`.
