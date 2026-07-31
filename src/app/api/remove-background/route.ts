@@ -77,7 +77,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: message }, { status: response.status });
     }
 
-    const imageBuffer = await response.arrayBuffer();
     const contentType =
       response.headers.get("content-type") ??
       (format === "jpg" || format === "jpeg"
@@ -86,7 +85,11 @@ export async function POST(request: NextRequest) {
           ? "image/webp"
           : "image/png");
 
-    return new NextResponse(imageBuffer, {
+    // Forward the upstream stream directly. Buffering with arrayBuffer()
+    // made the browser wait for the complete API-to-Next transfer before its
+    // own download could begin, and temporarily held a second full PNG in
+    // memory. The streamed body preserves the response bytes unchanged.
+    return new NextResponse(response.body, {
       status: 200,
       headers: {
         "Content-Type": contentType,
